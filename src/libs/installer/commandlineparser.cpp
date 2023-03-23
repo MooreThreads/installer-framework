@@ -127,6 +127,9 @@ CommandLineParser::CommandLineParser()
         << CommandLineOptions::scStartUninstallerShort << CommandLineOptions::scStartUninstallerLong,
         QLatin1String("Start application in uninstaller mode. This will override the internal "
                       "marker that is used to distinguish which kind of binary is currently running.")));
+    addOption(QCommandLineOption(QStringList()
+        << CommandLineOptions::scDevInstallShort << CommandLineOptions::scDevInstallLong,
+        QLatin1String("Start application in dev mode. This will not check GPU existence.")));
 
     // Misc installation options
     addOptionWithContext(QCommandLineOption(QStringList()
@@ -151,6 +154,8 @@ CommandLineParser::CommandLineParser()
     addOption(QCommandLineOption(QStringList()
         << CommandLineOptions::scNoSizeCheckingShort << CommandLineOptions::scNoSizeCheckingLong,
         QLatin1String("Disable checking of free space for installation target.")));
+    addOption(QCommandLineOption(QStringList() << CommandLineOptions::scNoEnvChecking
+        << QLatin1String("Disable checking mt gpu for developing use.")));
     addOption(QCommandLineOption(QStringList()
         << CommandLineOptions::scShowVirtualComponentsShort << CommandLineOptions::scShowVirtualComponentsLong,
         QLatin1String("Show virtual components in installer and package manager.")));
@@ -199,6 +204,10 @@ CommandLineParser::CommandLineParser()
     addOptionWithContext(QCommandLineOption(QStringList() << CommandLineOptions::scConfirmCommandShort
         << CommandLineOptions::scConfirmCommandLong, QLatin1String("[CLI] Confirms starting of "
         "installation, update or removal of components without user input.")), CommandLineOnly);
+
+    addOption(QCommandLineOption(QStringList()
+        << CommandLineOptions::scSilentUpdateShort << CommandLineOptions::scSilentUpdateLong,
+        QLatin1String("silent update")));
 
     // Developer options
     addOption(QCommandLineOption(QStringList()

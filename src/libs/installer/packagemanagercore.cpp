@@ -76,6 +76,10 @@
 
 #include <QStandardPaths>
 
+#ifdef FIND_MT_GPU
+#include "mt-gpu-finder/mt_gpu_finder.h"
+#endif
+
 /*!
     \namespace QInstaller
     \inmodule QtInstallerFramework
@@ -517,6 +521,48 @@ void PackageManagerCore::reset()
     d->m_installerBaseBinaryUnreplaced.clear();
     d->m_coreCheckedHash.clear();
     d->m_componentsToInstallCalculated = false;
+}
+
+void PackageManagerCore::rebootSystem()
+{
+    gainAdminRights();
+    QString reboot_command;
+    QStringList params;
+#ifdef WIN32
+	WCHAR systemPath[MAX_PATH] = { 0 };
+	GetSystemDirectoryW(systemPath, MAX_PATH);
+    reboot_command = QString::fromStdWString(systemPath) + QDir::separator() + QLatin1String("shutdown.exe");
+    params << QLatin1String("/r") << QLatin1String("/t") << QLatin1String("0");
+#else
+    reboot_command = QLatin1String("/usr/sbin/reboot");
+#endif
+
+    QProcessWrapper::startDetached(reboot_command, params);
+}
+
+bool PackageManagerCore::checkEnv()
+{
+    return d->m_checkEnv;
+}
+
+bool PackageManagerCore::checkGpuExists()
+{
+#ifdef FIND_MT_GPU
+    if (!mt_gpu_finder::exists()) {
+        QWidget *p = MessageBoxHandler::currentBestSuitParent();
+        if (p != nullptr) {
+            p->hide();
+        }
+
+        return false;
+    }
+#endif
+    return true;
+}
+
+void PackageManagerCore::setCheckEnv(bool check)
+{
+    d->m_checkEnv = check;
 }
 
 /*!
@@ -1058,22 +1104,10 @@ bool PackageManagerCore::checkTargetDir(const QString &targetDirectory)
 
         QFileInfo fi2(targetDirectory + QDir::separator() + fileName);
         if (fi2.exists()) {
-            MessageBoxHandler::critical(MessageBoxHandler::currentBestSuitParent(), QLatin1String("TargetDirectoryInUse"),
-                tr("Error"), tr("The directory you selected already "
-                                "exists and contains an installation. Choose a different target for installation."));
             return false;
         }
-
-        QMessageBox::StandardButton bt =
-            MessageBoxHandler::warning(MessageBoxHandler::currentBestSuitParent(), QLatin1String("OverwriteTargetDirectory"),
-            tr("Warning"), tr("You have selected an existing, non-empty directory for installation.\nNote that it will be "
-                              "completely wiped on uninstallation of this application.\nIt is not advisable to install into "
-                              "this directory as installation might fail.\nDo you want to continue?"), QMessageBox::Yes | QMessageBox::No);
-        return bt == QMessageBox::Yes;
+        return true;
     } else if (fi.isFile() || fi.isSymLink()) {
-        MessageBoxHandler::critical(MessageBoxHandler::currentBestSuitParent(), QLatin1String("WrongTargetDirectory"),
-            tr("Error"),  tr("You have selected an existing file "
-                             "or symlink, please choose a different target for installation."));
         return false;
     }
     return true;
@@ -3316,7 +3350,7 @@ void PackageManagerCore::setCanceled()
 {
     if (!d->m_repoFetched)
         cancelMetaInfoJob();
-    d->setStatus(PackageManagerCore::Canceled);
+    d->setStatus(PackageManagerCore::Failure);
 }
 
 /*!

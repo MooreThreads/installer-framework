@@ -281,7 +281,12 @@ QString PackageManagerCoreData::replaceVariables(const QString &str) const
             break;
         res += str.mid(pos, pos1 - pos);
         const QString name = str.mid(pos1 + 1, pos2 - pos1 - 1);
-        res += value(name).toString();
+        QString replacedName = value(name, name).toString();
+        if (replacedName == name) {
+            res += (QLatin1String("@") + replacedName + QLatin1String("@"));
+        } else {
+            res += replacedName;
+        }
         pos = pos2 + 1;
     }
     res += str.mid(pos);
@@ -302,7 +307,12 @@ QByteArray PackageManagerCoreData::replaceVariables(const QByteArray &ba) const
             break;
         res += ba.mid(pos, pos1 - pos);
         const QString name = QString::fromLocal8Bit(ba.mid(pos1 + 1, pos2 - pos1 - 1));
-        res += value(name).toString().toLocal8Bit();
+        QString replacedName = value(name, name).toString();
+        if (replacedName == name) {
+            res += (QByteArray("@") + replacedName.toLocal8Bit() + QByteArray("@"));
+        } else {
+            res += replacedName.toLocal8Bit();
+        }
         pos = pos2 + 1;
     }
     res += ba.mid(pos);

@@ -1,6 +1,14 @@
 !isEmpty(IFW_PRI_INCLUDED) {
     error("installerfw.pri already included")
 }
+
+QMAKE_CXXFLAGS_RELEASE = $$QMAKE_CFLAGS_RELEASE_WITH_DEBUGINFO
+QMAKE_LFLAGS_RELEASE = $$QMAKE_LFLAGS_RELEASE_WITH_DEBUGINFO
+
+#QMAKE_CXXFLAGS_RELEASE += /Zi
+#QMAKE_CXXFLAGS_RELEASE += /Od
+#DEFINES -=QT_NO_DEBUG_OUTPUT
+
 IFW_PRI_INCLUDED = 1
 
 IFW_VERSION_STR = 4.2.0
@@ -97,12 +105,18 @@ INCLUDEPATH += \
 win32:INCLUDEPATH += $$IFW_SOURCE_TREE/src/libs/7zip/win/CPP
 unix:INCLUDEPATH += $$IFW_SOURCE_TREE/src/libs/7zip/unix/CPP
 CONFIG(libarchive): INCLUDEPATH += $$IFW_SOURCE_TREE/src/libs/3rdparty/libarchive
+exists($$IFW_SOURCE_TREE/src/libs/3rdparty/libmtgf/mt-gpu-finder/mt_gpu_finder.pro) {
+!equals(TEMPLATE, app): DEFINES += MT_GPU_FINDER_STATIC_LIBRARY
+
+DEFINES += FIND_MT_GPU
+INCLUDEPATH += $$IFW_SOURCE_TREE/src/libs/3rdparty/libmtgf
+}
 
 LIBS += -L$$IFW_LIB_PATH
 # The order is important. The linker needs to parse archives in reversed dependency order.
 equals(TEMPLATE, app):LIBS += -linstaller
 win32:equals(TEMPLATE, app) {
-    LIBS += -luser32
+    LIBS += -luser32 -lcfgmgr32 -lOneCoreUAP
 }
 unix:!macx:LIBS += -lutil
 macx:LIBS += -framework Carbon -framework Security
@@ -123,7 +137,6 @@ CONFIG(static, static|shared) {
     QT += concurrent network qml xml
 }
 CONFIG += depend_includepath no_private_qt_headers_warning c++11
-win32:CONFIG += console
 
 exists(".git") {
     GIT_SHA1 = $$system(git rev-list --abbrev-commit -n1 HEAD)
@@ -173,6 +186,10 @@ CONFIG(libarchive):equals(TEMPLATE, app) {
         }
     }
 }
+contains(DEFINES, FIND_MT_GPU):equals(TEMPLATE, app) {
+    LIBS += -lmtgf
+    win32: LIBS += -ladvapi32
+}
 
 equals(TEMPLATE, app) {
     msvc:POST_TARGETDEPS += $$IFW_LIB_PATH/installer.lib $$IFW_LIB_PATH/7z.lib
@@ -183,5 +200,11 @@ equals(TEMPLATE, app) {
         msvc:POST_TARGETDEPS += $$IFW_LIB_PATH/libarchive.lib
         win32-g++*:POST_TARGETDEPS += $$IFW_LIB_PATH/liblibarchive.a
         unix:POST_TARGETDEPS += $$IFW_LIB_PATH/liblibarchive.a
+    }
+
+    contains(DEFINES, FIND_MT_GPU) {
+        msvc: POST_TARGETDEPS += $$IFW_LIB_PATH/mtgf.lib
+        win32-g++*: POST_TARGETDEPS += $$IFW_LIB_PATH/libmtgf.a
+        unix: POST_TARGETDEPS += $$IFW_LIB_PATH/libmtgf.a
     }
 }

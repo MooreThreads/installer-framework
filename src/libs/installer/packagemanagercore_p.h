@@ -185,6 +185,7 @@ public:
     int m_status;
     QString m_error;
 
+    bool m_checkEnv;
     bool m_needsHardRestart;
     bool m_testChecksum;
     bool m_launchedAsRoot;

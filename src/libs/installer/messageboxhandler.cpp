@@ -30,6 +30,7 @@
 
 #include "globals.h"
 #include "loggingutils.h"
+#include "custom_messgebox.h"
 
 #include <QtCore/QDebug>
 
@@ -363,6 +364,7 @@ QMessageBox::StandardButton MessageBoxHandler::autoReply(QMessageBox::StandardBu
     return QMessageBox::NoButton;
 }
 
+#if 0
 static QMessageBox::StandardButton showNewMessageBox(QWidget *parent, QMessageBox::Icon icon,
     const QString &title, const QString &text, QMessageBox::StandardButtons buttons,
     QMessageBox::StandardButton defaultButton)
@@ -390,6 +392,37 @@ static QMessageBox::StandardButton showNewMessageBox(QWidget *parent, QMessageBo
 #if defined(Q_OS_MACOS)
     msgBox.setWindowModality(Qt::WindowModal);
 #endif
+    if (msgBox.exec() == -1)
+        return QMessageBox::Cancel;
+    return msgBox.standardButton(msgBox.clickedButton());
+}
+#endif
+
+static QMessageBox::StandardButton showNewMessageBox(QWidget *parent, QMessageBox::Icon icon,
+                                                     const QString &title, const QString &text, QMessageBox::StandardButtons buttons,
+                                                     QMessageBox::StandardButton defaultButton)
+{
+    Q_UNUSED(icon);
+    CustomMessgeBox msgBox(title, text, QMessageBox::NoButton, parent);
+    QDialogButtonBox *buttonBox = msgBox.findChild<QDialogButtonBox *>();
+    Q_ASSERT(buttonBox != nullptr);
+
+    uint mask = QMessageBox::FirstButton;
+    while (mask <= QMessageBox::LastButton) {
+        uint sb = buttons & mask;
+        mask <<= 1;
+        if (!sb)
+            continue;
+        QPushButton *button = msgBox.addButton((QMessageBox::StandardButton)sb);
+        // Choose the first accept role as the default
+        if (msgBox.defaultButton())
+            continue;
+        if ((defaultButton == QMessageBox::NoButton
+             && buttonBox->buttonRole(button) == QDialogButtonBox::AcceptRole)
+            || (defaultButton != QMessageBox::NoButton && sb == uint(defaultButton))) {
+            msgBox.setDefaultButton(button);
+        }
+    }
     if (msgBox.exec() == -1)
         return QMessageBox::Cancel;
     return msgBox.standardButton(msgBox.clickedButton());

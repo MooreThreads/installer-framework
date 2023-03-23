@@ -77,7 +77,9 @@ public:
         Canceled = 3,
         Unfinished = 4,
         ForceUpdate = 5,
-        EssentialUpdated = 6
+        EssentialUpdated = 6,
+        GpuNotExist = 7,
+        SystemNotSupport = 8
     };
     Status status() const;
     QString error() const;
@@ -91,6 +93,11 @@ public:
         ReadyForInstallation = 0x6000,
         PerformInstallation = 0x7000,
         InstallationFinished = 0x8000,
+        PesHome,
+        PesLicence,
+        PesInstallation,
+        PesFinished,
+        PesError,
         End = 0xffff
     };
 
@@ -136,6 +143,12 @@ public:
 
     bool run();
     void reset();
+
+    void rebootSystem();
+
+    bool checkEnv();
+    bool checkGpuExists();
+    void setCheckEnv(bool check);
 
     void setGuiObject(QObject *gui);
     QObject *guiObject() const;

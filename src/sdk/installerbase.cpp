@@ -45,6 +45,29 @@
 #include <qtbuiltinhook.h>
 #endif
 
+class PackageStyle : public QProxyStyle
+{
+public:
+    PackageStyle(QStyle* style = nullptr) : QProxyStyle(style) {}
+    PackageStyle(const QString& key) : QProxyStyle(key) {}
+
+    virtual ~PackageStyle() {}
+
+    int pixelMetric(PixelMetric m, const QStyleOption* opt = nullptr, const QWidget* widget = nullptr) const override 
+    {
+        switch (m) {
+            case QStyle::PM_LayoutHorizontalSpacing:
+            case QStyle::PM_LayoutLeftMargin:
+            case QStyle::PM_LayoutRightMargin:
+            case QStyle::PM_LayoutTopMargin:
+            case QStyle::PM_LayoutBottomMargin:
+                return 0;
+        }
+
+        return QProxyStyle::pixelMetric(m, opt, widget);
+    }
+};
+
 InstallerBase::InstallerBase(int &argc, char *argv[])
     : SDKApp<QApplication>(argc, argv)
 {
@@ -58,10 +81,17 @@ InstallerBase::~InstallerBase()
 
 int InstallerBase::run()
 {
+    bool bSilentUpdate = false;
+    if (m_parser.isSet(CommandLineOptions::scSilentUpdateLong)) {
+        bSilentUpdate = true;
+    }
+
     QString errorMessage;
     if (!init(errorMessage)) {
-        QInstaller::MessageBoxHandler::information(nullptr, QLatin1String("UnableToStart"),
-            tr("Unable to start installer"), errorMessage);
+        if (!bSilentUpdate) {
+            QInstaller::MessageBoxHandler::information(nullptr, QLatin1String("UnableToStart"),
+                tr("Unable to start installer"), errorMessage);
+        }
         return EXIT_FAILURE;
     }
 
@@ -70,7 +100,6 @@ int InstallerBase::run()
         f.setItalic(true);
         QInstaller::PackageManagerCore::setVirtualComponentsFont(f);
     }
-
     qCDebug(QInstaller::lcInstallerInstallLog) << "Language:" << QLocale().uiLanguages()
         .value(0, QLatin1String("No UI language set")).toUtf8().constData();
 
@@ -87,10 +116,36 @@ int InstallerBase::run()
     TabController controller(nullptr);
     controller.setManager(m_core);
     controller.setControlScript(controlScript());
-    if (m_core->isInstaller())
-        controller.setGui(new InstallerGui(m_core));
-    else
+
+    setFont(QFont(QLatin1String("Microsoft YaHei")));
+  
+    setStyle(new PackageStyle(nullptr));
+
+    if (m_parser.isSet(CommandLineOptions::scDevInstallLong)) {
+        m_core->setCheckEnv(false);
+    }
+
+    try {
+        m_core->gainAdminRights();
+    } catch (const QInstaller::Error &e) {
+        return EXIT_SUCCESS;
+    } catch (const std::exception &e) {
+        return EXIT_SUCCESS;
+    } catch (...) {
+        return EXIT_SUCCESS;
+    }
+
+    if (m_core->isInstaller()) {
+        InstallerGui* pGui = new InstallerGui(m_core);
+        if (bSilentUpdate) {
+            m_core->setValue(QLatin1String("silent_update"), QLatin1String("true"));
+            pGui->setSilent(true, false);
+        }
+        controller.setGui(pGui);
+    }
+    else {
         controller.setGui(new MaintenanceGui(m_core));
+    }
 
     QInstaller::PackageManagerCore::Status status =
         QInstaller::PackageManagerCore::Status(controller.init());
@@ -130,5 +185,4 @@ int InstallerBase::run()
             break;
     }
     return QInstaller::PackageManagerCore::Failure;
-
 }

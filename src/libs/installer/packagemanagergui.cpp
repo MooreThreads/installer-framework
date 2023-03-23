@@ -47,11 +47,13 @@
 #include "globals.h"
 
 #include <QApplication>
+#include <QUiLoader>
 
 #include <QtCore/QDir>
 #include <QtCore/QPair>
 #include <QtCore/QProcess>
 #include <QtCore/QTimer>
+#include <QtCore/QSettings>
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -64,19 +66,24 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
-#include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSplitter>
 #include <QStringListModel>
 #include <QTextBrowser>
-
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QPainter>
+#include <QTextFrame>
 #include <QVBoxLayout>
 #include <QShowEvent>
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QDesktopWidget>
+#include <QScreen>
+
+#include <QXmlStreamReader>
 
 #ifdef Q_OS_WIN
 # include <qt_windows.h>
@@ -87,6 +94,8 @@
 using namespace KDUpdater;
 using namespace QInstaller;
 
+static const char* kConfigSetupName = "path";
+static int kShadowLen = 8;
 
 class DynamicInstallerPage : public PackageManagerPage
 {
@@ -240,7 +249,7 @@ public:
     QHash<int, QString> m_defaultButtonText;
 
     QJSValue m_controlScriptContext;
-    QHash<QWizard::WizardButton, QString> m_wizardButtonTypes;
+    QHash<QWizard::WizardButton, QString> m_wizardButtonTypes;   
 };
 
 
@@ -292,12 +301,28 @@ PackageManagerGui::PackageManagerGui(PackageManagerCore *core, QWidget *parent)
     : QWizard(parent)
     , d(new Private)
     , m_core(core)
+    , space_label_(nullptr)
+    , size_adjust_(0, 0)
+    , origin_dpi_(0)
+    , origin_size_(0, 0)
+    , current_dpi_(0)
 {
-    if (m_core->isInstaller())
-        setWindowTitle(tr("%1 Setup").arg(m_core->value(scTitle)));
-    else
-        setWindowTitle(tr("Maintain %1").arg(m_core->value(scTitle)));
-    setWindowFlags(windowFlags() &~ Qt::WindowContextHelpButtonHint);
+    QWidget* flickerWidget = (QWidget*)(children()[0]);
+    flickerWidget->layout()->setContentsMargins(0, 0, 0, 0);
+
+    setObjectName(QLatin1String("PackageManagerGui"));
+    if(wizardConcise()){
+        space_label_ = new QLabel(this);
+
+        space_label_->setFixedHeight(core->isInstaller() ? 2 : 6);
+        space_label_->setStyleSheet(QLatin1String("border-image: url(:/space.png)"));
+        space_label_->move(kShadowLen, 32 + kShadowLen);
+        space_label_->setVisible(true);
+    } else {
+        if (m_core->isInstaller()) {
+            setWindowTitle(tr("%1 Installation guide").arg(m_core->value(scTitle)));
+        }
+    }
 
 #ifndef Q_OS_MACOS
     setWindowIcon(QIcon(m_core->settings().installerWindowIcon()));
@@ -312,8 +337,9 @@ PackageManagerGui::PackageManagerGui(PackageManagerCore *core, QWidget *parent)
     setSizeGripEnabled(true);
 #endif
 
-    if (!m_core->settings().wizardStyle().isEmpty())
-        setWizardStyle(getStyle(m_core->settings().wizardStyle()));
+    if (!m_core->settings().wizardStyle().isEmpty()){
+        setWizardStyle(ClassicStyle);
+    }
 
     // set custom stylesheet
     const QString styleSheetFile = m_core->settings().styleSheet();
@@ -334,6 +360,9 @@ PackageManagerGui::PackageManagerGui(PackageManagerCore *core, QWidget *parent)
 
     setOption(QWizard::NoBackButtonOnStartPage);
     setOption(QWizard::NoBackButtonOnLastPage);
+
+    setWindowFlags(Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
 
     if (m_core->settings().wizardShowPageList()) {
         QWidget *sideWidget = new QWidget(this);
@@ -419,6 +448,18 @@ PackageManagerGui::PackageManagerGui(PackageManagerCore *core, QWidget *parent)
     // We need to create this ugly hack so that the installer doesn't exceed the maximum size of the
     // screen. The screen size where the widget lies is not available until the widget is visible.
     QTimer::singleShot(30, this, SLOT(setMaxSize()));
+
+#ifdef WIN32
+    HDC hdcScreen = GetDC(nullptr);
+    origin_dpi_ = GetDeviceCaps(hdcScreen, LOGPIXELSX);
+    ReleaseDC(nullptr, hdcScreen);
+#else
+    int screenNum = qApp->desktop()->screenNumber(this);
+    if (screenNum >= 0) {
+        QScreen* screen = qApp->screens().at(screenNum);
+        origin_dpi_ = screen->logicalDotsPerInch();
+    }
+#endif
 }
 
 /*!
@@ -522,10 +563,41 @@ QWizard::WizardStyle PackageManagerGui::getStyle(const QString &name)
 /*!
    Hides the GUI when \a silent is \c true.
 */
-void PackageManagerGui::setSilent(bool silent)
+void PackageManagerGui::setSilent(bool silent, bool bSilentInstall)
 {
   d->m_silent = silent;
   setVisible(!silent);
+
+  if (silent && bSilentInstall) {
+      foreach(const int id, pageIds()) {
+          PackageManagerPage* wizardPage = dynamic_cast<PackageManagerPage*>(page(id));
+          if (wizardPage) {
+              wizardPage->setSilent(true);
+          }
+      }
+
+      QSettings last_setting(QSettings::NativeFormat, QSettings::UserScope,
+          packageManagerCore()->value(scPublisher),
+          packageManagerCore()->value(scName));
+      QString target_dir = last_setting.value(QLatin1String(kConfigSetupName)).toString();
+      if (target_dir.isEmpty())
+          target_dir = packageManagerCore()->value(scTargetDir);
+
+      QString publisher = packageManagerCore()->value(scPublisher);
+      QString title = packageManagerCore()->value(scTitle);
+      QString base_path = QDir::separator() + publisher + QDir::separator() + title;
+      if (!target_dir.contains(base_path))
+      {
+          target_dir = target_dir + base_path;
+      }
+      target_dir = QDir::toNativeSeparators(QDir(target_dir).absolutePath());
+
+      QString version = packageManagerCore()->value(QLatin1String("Version"));
+      target_dir = target_dir + QDir::separator() + version;
+      packageManagerCore()->setValue(QLatin1String("TargetDir"), target_dir);
+
+      QTimer::singleShot(100, packageManagerCore(), SLOT(runInstaller()));
+  }
 }
 
 /*!
@@ -553,7 +625,7 @@ void PackageManagerGui::setTextItems(QObject *object, const QStringList &items)
     }
 
     qCWarning(QInstaller::lcDeveloperBuild) << "Cannot set text items on object of type"
-             << object->metaObject()->className() << ".";
+                                            << object->metaObject()->className() << ".";
 }
 
 /*!
@@ -707,6 +779,7 @@ void PackageManagerGui::executeControlScript(int pageId)
         callControlScriptMethod(p->objectName() + QLatin1String("Callback"));
 }
 
+
 /*!
     Replaces the default button text with translated text when the application
     language changes.
@@ -749,20 +822,36 @@ void PackageManagerGui::showEvent(QShowEvent *event)
                 }
             }
         }
-        QSize minimumSize;
-        minimumSize.setWidth(m_core->settings().wizardMinimumWidth()
-            ? m_core->settings().wizardMinimumWidth()
-            : width());
 
-        minimumSize.setHeight(m_core->settings().wizardMinimumHeight()
-            ? m_core->settings().wizardMinimumHeight()
-            : height());
+        if (m_core->isInstaller()) {
+            QSize minimumSize;
+            minimumSize.setWidth(m_core->settings().wizardMinimumWidth()
+                ? m_core->settings().wizardMinimumWidth()
+                : width());
 
-        setMinimumSize(minimumSize);
-        if (minimumWidth() < m_core->settings().wizardDefaultWidth())
-            resize(m_core->settings().wizardDefaultWidth(), height());
-        if (minimumHeight() < m_core->settings().wizardDefaultHeight())
-            resize(width(), m_core->settings().wizardDefaultHeight());
+            minimumSize.setHeight(m_core->settings().wizardMinimumHeight()
+                ? m_core->settings().wizardMinimumHeight()
+                : height());
+
+            origin_size_ = minimumSize;
+            setMinimumSize(minimumSize);
+            if (minimumWidth() < m_core->settings().wizardDefaultWidth()) {
+                origin_size_.setWidth(m_core->settings().wizardDefaultWidth() + 2 * kShadowLen);
+            }
+                
+            if (minimumHeight() < m_core->settings().wizardDefaultHeight()) {
+                origin_size_.setHeight(m_core->settings().wizardDefaultHeight() + 2 * kShadowLen);
+            }
+
+            resize(origin_size_);
+        }
+        else {
+            origin_size_.setWidth(337 + 2 * kShadowLen);
+            origin_size_.setHeight(172 + 2 * kShadowLen);
+            resize(origin_size_);
+        }
+
+        current_size_ = origin_size_;
     }
     QWizard::showEvent(event);
     QMetaObject::invokeMethod(this, "dependsOnLocalInstallerBinary", Qt::QueuedConnection);
@@ -782,7 +871,7 @@ void PackageManagerGui::wizardPageInsertionRequested(QWidget *widget,
     int pageId = static_cast<int>(page) - 1;
     while (QWizard::page(pageId) != nullptr)
         --pageId;
-
+    qInfo() << "add dynamic wizard page ";
     // add it
     setPage(pageId, new DynamicInstallerPage(widget, m_core));
     updatePageListWidget();
@@ -931,39 +1020,45 @@ QWidget *PackageManagerGui::pageWidgetByObjectName(const QString &name) const
 void PackageManagerGui::cancelButtonClicked()
 {
     const int id = currentId();
-    if (id == PackageManagerCore::Introduction || id == PackageManagerCore::InstallationFinished) {
+    if (id == PackageManagerCore::Introduction || id == PackageManagerCore::InstallationFinished
+        || id == PackageManagerCore::PesFinished || id == PackageManagerCore::PesError) {
         m_core->setNeedsHardRestart(false);
         QDialog::reject(); return;
     }
 
+    if(id == PackageManagerCore::ReadyForInstallation && packageManagerCore()->isUninstaller()){
+        QDialog::reject();
+        return;
+    }
+
     QString question;
-    bool interrupt = false;
     PackageManagerPage *const page = qobject_cast<PackageManagerPage*> (currentPage());
     if (page && page->isInterruptible()
         && m_core->status() != PackageManagerCore::Canceled
         && m_core->status() != PackageManagerCore::Failure) {
-            interrupt = true;
-            question = tr("Do you want to cancel the installation process?");
+            question = tr("Do you want to cancel \"%1\" installation process ?").arg(m_core->value(scTitle));
             if (m_core->isUninstaller())
-                question = tr("Do you want to cancel the removal process?");
+                question = tr("Do you want to cancel the removal process ?");
     } else {
-        question = tr("Do you want to quit the installer application?");
+        question = tr("Do you want to quit \"%1\"installer application ?").arg(m_core->value(scTitle));
         if (m_core->isUninstaller())
-            question = tr("Do you want to quit the uninstaller application?");
+            question = tr("Do you want to quit the \"%1\"uninstaller application ?").arg(m_core->value(scTitle));;
         if (m_core->isMaintainer())
-            question = tr("Do you want to quit the maintenance application?");
+            question = tr("Do you want to quit the \"%1\"maintenance application ?").arg(m_core->value(scTitle));;
+    }
+
+    if (page && !page->isInterruptible()) {
+        return;
     }
 
     const QMessageBox::StandardButton button =
         MessageBoxHandler::question(MessageBoxHandler::currentBestSuitParent(),
-        QLatin1String("cancelInstallation"), tr("%1 Question").arg(m_core->value(scTitle)), question,
-        QMessageBox::Yes | QMessageBox::No);
+        QLatin1String("cancelInstallation"), tr("%1").arg(m_core->value(scTitle)), question,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
 
+    
     if (button == QMessageBox::Yes) {
-        if (interrupt)
-            emit interrupted();
-        else
-            QDialog::reject();
+        QDialog::reject();
     }
 }
 
@@ -996,6 +1091,11 @@ void PackageManagerGui::setModified(bool value)
 */
 void PackageManagerGui::showFinishedPage()
 {
+    if (isSilent()) {
+        QDialog::done(Accepted);
+        qApp->exit(0);
+        return;
+    }
     if (d->m_autoSwitchPage)
         next();
     else
@@ -1121,6 +1221,83 @@ void PackageManagerGui::currentPageChanged(int newId)
     executeControlScript(newId);
 }
 
+bool QInstaller::PackageManagerGui::nativeEvent(const QByteArray& eventType, void* message, long* result)
+{
+#ifdef WIN32
+    MSG* msg = static_cast<MSG*>(message);
+    if (msg->message == WM_DPICHANGED) {
+        DWORD dpi = LOWORD(msg->wParam);
+        current_dpi_ = dpi;
+        if (origin_dpi_ != 0 && dpi != 0) {
+            int mWidth = origin_size_.width() / origin_dpi_ * dpi;
+            int mHeight = origin_size_.height() / origin_dpi_ * dpi;
+
+            QSize mSize(mWidth, mHeight);
+            current_size_ = mSize;
+
+            resize(mSize);
+            repaint();
+        }
+    }
+#endif
+    return QWizard::nativeEvent(eventType, message, result);
+}
+
+void QInstaller::PackageManagerGui::paintEvent(QPaintEvent* event)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(QBrush(Qt::white));
+    painter.setPen(Qt::transparent);
+
+    int radius = 8;
+
+    QColor color(102, 102, 102, 200);
+    for (int i = 0; i < kShadowLen; i++)
+    {
+        int nAlpha = 120 - sqrt(i) * 50;
+        if (nAlpha < 0)
+            break;
+        color.setAlpha(nAlpha);
+        painter.setPen(color);
+        painter.setBrush(QBrush(Qt::transparent));
+        painter.drawRoundedRect(
+            kShadowLen - i, kShadowLen - i,
+            width() - (kShadowLen - i) * 2,
+            height() - (kShadowLen - i) * 2,
+            radius, radius);
+    }
+
+    painter.setBrush(QBrush(Qt::white));
+    QRect drawRect(kShadowLen, kShadowLen, width() - 2 * kShadowLen, height() - 2 * kShadowLen);
+    painter.drawRoundedRect(drawRect, radius, radius);
+
+    if (size_adjust_ != size()) {
+        QResizeEvent* e = new QResizeEvent(size(), size_adjust_);
+        qApp->sendEvent(this, e);
+    }
+}
+
+void QInstaller::PackageManagerGui::resizeEvent(QResizeEvent* event)
+{
+    if (space_label_) {
+        space_label_->setFixedWidth(width() - 2 * kShadowLen);
+    }
+
+    size_adjust_ = event->size();
+
+    if (!origin_size_.isNull() && origin_dpi_ != 0 && current_dpi_ != 0) {
+        int mWidth = origin_size_.width() / origin_dpi_ * current_dpi_;
+        int mHeight = origin_size_.height() / origin_dpi_ * current_dpi_;
+        if (size_adjust_.width() != mWidth || size_adjust_.height() != mHeight) {
+//             resize(mWidth, mHeight);
+//             return;
+        }
+    }
+   
+    QWizard::resizeEvent(event);
+}
+
 // -- PackageManagerPage
 
 /*!
@@ -1205,7 +1382,12 @@ PackageManagerPage::PackageManagerPage(PackageManagerCore *core)
     , m_core(core)
     , validatorComponent(nullptr)
     , m_showOnPageList(true)
+    , m_bSilent(false)
 {
+    setWindowFlags(Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
+
+    setContentsMargins(0, 0, 0, 0);
     if (!m_core->settings().titleColor().isEmpty())
         m_titleColor = m_core->settings().titleColor();
 
@@ -1373,6 +1555,7 @@ void PackageManagerPage::removeCustomWidget(const QWidget *widget)
             ++it;
     }
 }
+
 /*!
     Inserts \a widget at the position specified by \a offset in relation to
     another widget specified by \a siblingName. The default position is directly
@@ -1429,6 +1612,16 @@ int PackageManagerPage::nextId() const
         return nextNextId;  // no component with a license or all components with license installed
     }
     return next;    // default, show the next page
+}
+
+void QInstaller::PackageManagerPage::setSilent(bool bSilent)
+{
+    m_bSilent = bSilent;
+}
+
+bool QInstaller::PackageManagerPage::isSilent() const
+{
+    return m_bSilent;
 }
 
 // -- IntroductionPage
@@ -1573,7 +1766,7 @@ bool IntroductionPage::validatePage()
         showAll();
         setMaintenanceToolsEnabled(false);
     } else {
-        showMetaInfoUpdate();
+        //showMetaInfoUpdate();
     }
 
 #ifdef Q_OS_WIN
@@ -1889,185 +2082,6 @@ void IntroductionPage::setText(const QString &text)
     m_msgLabel->setText(text);
 }
 
-
-// -- LicenseAgreementPage::ClickForwarder
-
-class LicenseAgreementPage::ClickForwarder : public QObject
-{
-    Q_OBJECT
-
-public:
-    explicit ClickForwarder(QAbstractButton *button)
-        : QObject(button)
-        , m_abstractButton(button) {}
-
-protected:
-    bool eventFilter(QObject *object, QEvent *event)
-    {
-        if (event->type() == QEvent::MouseButtonRelease) {
-            m_abstractButton->click();
-            return true;
-        }
-        // standard event processing
-        return QObject::eventFilter(object, event);
-    }
-private:
-    QAbstractButton *m_abstractButton;
-};
-
-
-// -- LicenseAgreementPage
-
-/*!
-    \class QInstaller::LicenseAgreementPage
-    \inmodule QtInstallerFramework
-    \brief The LicenseAgreementPage presents a license agreement to the end
-    users for acceptance.
-
-    The license check page is displayed if you specify a license file in the
-    package information file and copy the file to the meta directory. End users must
-    accept the terms of the license agreement for the installation to continue.
-*/
-
-/*!
-    Constructs a license check page with \a core as parent.
-*/
-LicenseAgreementPage::LicenseAgreementPage(PackageManagerCore *core)
-    : PackageManagerPage(core)
-{
-    setPixmap(QWizard::WatermarkPixmap, QPixmap());
-    setObjectName(QLatin1String("LicenseAgreementPage"));
-    setColoredTitle(tr("License Agreement"));
-
-    m_licenseListWidget = new QListWidget(this);
-    m_licenseListWidget->setObjectName(QLatin1String("LicenseListWidget"));
-    connect(m_licenseListWidget, &QListWidget::currentItemChanged,
-        this, &LicenseAgreementPage::currentItemChanged);
-
-    m_textBrowser = new QTextBrowser(this);
-    m_textBrowser->setReadOnly(true);
-    m_textBrowser->setOpenLinks(false);
-    m_textBrowser->setOpenExternalLinks(true);
-    m_textBrowser->setObjectName(QLatin1String("LicenseTextBrowser"));
-    connect(m_textBrowser, &QTextBrowser::anchorClicked, this, &LicenseAgreementPage::openLicenseUrl);
-
-    QSplitter *licenseSplitter = new QSplitter(this);
-    licenseSplitter->setOrientation(Qt::Vertical);
-    licenseSplitter->setChildrenCollapsible(false);
-    licenseSplitter->addWidget(m_licenseListWidget);
-    licenseSplitter->addWidget(m_textBrowser);
-    licenseSplitter->setStretchFactor(0, 1);
-    licenseSplitter->setStretchFactor(1, 3);
-
-    QVBoxLayout *layout = new QVBoxLayout(this);
-    layout->addWidget(licenseSplitter);
-
-    m_acceptCheckBox = new QCheckBox(this);
-    m_acceptCheckBox->setShortcut(QKeySequence(tr("Alt+A", "Agree license")));
-    m_acceptCheckBox->setObjectName(QLatin1String("AcceptLicenseCheckBox"));
-    ClickForwarder *acceptClickForwarder = new ClickForwarder(m_acceptCheckBox);
-
-    m_acceptLabel = new QLabel;
-    m_acceptLabel->setWordWrap(true);
-    m_acceptLabel->installEventFilter(acceptClickForwarder);
-    m_acceptLabel->setObjectName(QLatin1String("AcceptLicenseLabel"));
-    m_acceptLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
-
-    QGridLayout *gridLayout = new QGridLayout;
-    gridLayout->setColumnStretch(1, 1);
-    gridLayout->addWidget(m_acceptCheckBox, 0, 0);
-    gridLayout->addWidget(m_acceptLabel, 0, 1);
-    layout->addLayout(gridLayout);
-
-    connect(m_acceptCheckBox, &QAbstractButton::toggled, this, &QWizardPage::completeChanged);
-}
-
-/*!
-    Initializes the page's fields based on values from fields on previous
-    pages.
-*/
-void LicenseAgreementPage::entering()
-{
-    m_licenseListWidget->clear();
-    m_textBrowser->setHtml(QString());
-    m_licenseListWidget->setVisible(false);
-
-    packageManagerCore()->calculateComponentsToInstall();
-    foreach (QInstaller::Component *component, packageManagerCore()->orderedComponentsToInstall())
-        packageManagerCore()->addLicenseItem(component->licenses());
-
-    createLicenseWidgets();
-
-    const int licenseCount = m_licenseListWidget->count();
-    if (licenseCount > 0) {
-        m_licenseListWidget->setVisible(licenseCount > 1);
-        m_licenseListWidget->setCurrentItem(m_licenseListWidget->item(0));
-    }
-
-    packageManagerCore()->clearLicenses();
-
-    updateUi();
-}
-
-/*!
-    Returns \c true if the accept license radio button is checked; otherwise,
-    returns \c false.
-*/
-bool LicenseAgreementPage::isComplete() const
-{
-    return m_acceptCheckBox->isChecked();
-}
-
-void LicenseAgreementPage::openLicenseUrl(const QUrl &url)
-{
-    QDesktopServices::openUrl(url);
-}
-
-void LicenseAgreementPage::currentItemChanged(QListWidgetItem *current)
-{
-    if (current)
-        m_textBrowser->setText(current->data(Qt::UserRole).toString());
-}
-
-void LicenseAgreementPage::createLicenseWidgets()
-{
-    QHash<QString, QMap<QString, QString>> priorityHash = packageManagerCore()->sortedLicenses();
-
-    QStringList priorities = priorityHash.keys();
-    priorities.sort();
-
-    for (int i = priorities.length() - 1; i >= 0; --i) {
-        QString priority = priorities.at(i);
-        QMap<QString, QString> licenses = priorityHash.value(priority);
-        QStringList licenseNames = licenses.keys();
-        licenseNames.sort(Qt::CaseInsensitive);
-        for (QString licenseName : licenseNames) {
-            QListWidgetItem *item = new QListWidgetItem(licenseName, m_licenseListWidget);
-            item->setData(Qt::UserRole, licenses.value(licenseName));
-        }
-    }
-}
-
-void LicenseAgreementPage::updateUi()
-{
-    QString subTitleText;
-    QString acceptButtonText;
-    if (m_licenseListWidget->count() == 1) {
-        subTitleText = tr("Please read the following license agreement. You must accept the terms "
-                          "contained in this agreement before continuing with the installation.");
-        acceptButtonText = tr("I accept the license.");
-    } else {
-        subTitleText = tr("Please read the following license agreements. You must accept the terms "
-                          "contained in these agreements before continuing with the installation.");
-        acceptButtonText = tr("I accept the licenses.");
-    }
-    m_licenseListWidget->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
-    setColoredSubTitle(subTitleText);
-
-    m_acceptLabel->setText(acceptButtonText);
-
-}
-
 // -- ComponentSelectionPage
 
 /*!
@@ -2257,387 +2271,6 @@ bool ComponentSelectionPage::isComplete() const
     return false;
 }
 
-
-// -- TargetDirectoryPage
-
-/*!
-    \class QInstaller::TargetDirectoryPage
-    \inmodule QtInstallerFramework
-    \brief The TargetDirectoryPage class specifies the target directory for the
-    installation.
-
-    End users can leave the page to continue the installation only if certain criteria are
-    fulfilled. Some of them are checked in the validatePage() function, some in the
-    targetDirWarning() function:
-
-    \list
-        \li No empty path given as target.
-        \li No relative path given as target.
-        \li Only ASCII characters are allowed in the path if the <AllowNonAsciiCharacters> element
-            in the configuration file is set to \c false.
-        \li The following ambiguous characters are not allowed in the path: [\"~<>|?*!@#$%^&:,;]
-        \li No root or home directory given as target.
-        \li On Windows, path names must be less than 260 characters long.
-        \li No spaces in the path if the <AllowSpaceInPath> element in the configuration file is set
-            to \c false.
-    \endlist
-*/
-
-/*!
-    Constructs a target directory selection page with \a core as parent.
-*/
-TargetDirectoryPage::TargetDirectoryPage(PackageManagerCore *core)
-    : PackageManagerPage(core)
-{
-    setPixmap(QWizard::WatermarkPixmap, QPixmap());
-    setObjectName(QLatin1String("TargetDirectoryPage"));
-    setColoredTitle(tr("Installation Folder"));
-
-    QVBoxLayout *layout = new QVBoxLayout(this);
-
-    QLabel *msgLabel = new QLabel(this);
-    msgLabel->setWordWrap(true);
-    msgLabel->setObjectName(QLatin1String("MessageLabel"));
-    msgLabel->setText(tr("Please specify the directory where %1 will be installed.").arg(productName()));
-    layout->addWidget(msgLabel);
-
-    QHBoxLayout *hlayout = new QHBoxLayout;
-
-    m_textChangeTimer.setSingleShot(true);
-    m_textChangeTimer.setInterval(200);
-    connect(&m_textChangeTimer, &QTimer::timeout, this, &QWizardPage::completeChanged);
-
-    m_lineEdit = new QLineEdit(this);
-    m_lineEdit->setObjectName(QLatin1String("TargetDirectoryLineEdit"));
-    connect(m_lineEdit, &QLineEdit::textChanged,
-            &m_textChangeTimer, static_cast<void (QTimer::*)()>(&QTimer::start));
-    hlayout->addWidget(m_lineEdit);
-
-    QPushButton *browseButton = new QPushButton(this);
-    browseButton->setObjectName(QLatin1String("BrowseDirectoryButton"));
-    connect(browseButton, &QAbstractButton::clicked, this, &TargetDirectoryPage::dirRequested);
-    browseButton->setShortcut(QKeySequence(tr("Alt+R", "Browse file system to choose a file")));
-    browseButton->setText(tr("B&rowse..."));
-    browseButton->setToolTip(TargetDirectoryPage::tr("Browse file system to choose the installation directory."));
-    hlayout->addWidget(browseButton);
-
-    layout->addLayout(hlayout);
-
-    QPalette palette;
-    palette.setColor(QPalette::WindowText, Qt::red);
-
-    m_warningLabel = new QLabel(this);
-    m_warningLabel->setPalette(palette);
-    m_warningLabel->setWordWrap(true);
-    m_warningLabel->setObjectName(QLatin1String("WarningLabel"));
-    layout->addWidget(m_warningLabel);
-
-    setLayout(layout);
-}
-
-/*!
-    Returns the target directory for the installation.
-*/
-QString TargetDirectoryPage::targetDir() const
-{
-    return m_lineEdit->text().trimmed();
-}
-
-/*!
-    Sets the directory specified by \a dirName as the target directory for the
-    installation.
-*/
-void TargetDirectoryPage::setTargetDir(const QString &dirName)
-{
-    m_lineEdit->setText(dirName);
-}
-
-/*!
-    Initializes the page.
-*/
-void TargetDirectoryPage::initializePage()
-{
-    QString targetDir = packageManagerCore()->value(scTargetDir);
-    if (targetDir.isEmpty()) {
-        targetDir = QDir::homePath() + QDir::separator();
-        if (!packageManagerCore()->settings().allowSpaceInPath()) {
-            // prevent spaces in the default target directory
-            if (targetDir.contains(QLatin1Char(' ')))
-                targetDir = QDir::rootPath();
-            targetDir += productName().remove(QLatin1Char(' '));
-        } else {
-            targetDir += productName();
-        }
-    }
-    m_lineEdit->setText(QDir::toNativeSeparators(QDir(targetDir).absolutePath()));
-
-    PackageManagerPage::initializePage();
-}
-
-/*!
-    Returns \c true if the target directory exists and has correct content.
-*/
-bool TargetDirectoryPage::validatePage()
-{
-    m_textChangeTimer.stop();
-
-    if (!isComplete())
-        return false;
-
-    if (!isVisible())
-        return true;
-
-    const QString remove = packageManagerCore()->value(QLatin1String("RemoveTargetDir"));
-    if (!QVariant(remove).toBool())
-        return true;
-
-    return this->packageManagerCore()->checkTargetDir(targetDir());
-}
-
-/*!
-    Initializes the page's fields based on values from fields on previous
-    pages.
-*/
-void TargetDirectoryPage::entering()
-{
-    if (QPushButton *const b = qobject_cast<QPushButton *>(gui()->button(QWizard::NextButton)))
-        b->setDefault(true);
-}
-
-/*!
-    Called when end users leave the page and the PackageManagerGui:currentPageChanged()
-    signal is triggered.
-*/
-void TargetDirectoryPage::leaving()
-{
-    packageManagerCore()->setValue(scTargetDir, targetDir());
-}
-
-void TargetDirectoryPage::dirRequested()
-{
-    const QString newDirName = QFileDialog::getExistingDirectory(this,
-        tr("Select Installation Folder"), targetDir());
-    if (newDirName.isEmpty() || newDirName == targetDir())
-        return;
-    m_lineEdit->setText(QDir::toNativeSeparators(newDirName));
-}
-
-/*!
-    Requests a warning message to be shown to end users upon invalid input. If the input is valid,
-    the \uicontrol Next button is enabled.
-
-    Returns \c true if a valid path to the target directory is set; otherwise returns \c false.
-*/
-bool TargetDirectoryPage::isComplete() const
-{
-    m_warningLabel->setText(packageManagerCore()->targetDirWarning(targetDir()));
-    return m_warningLabel->text().isEmpty();
-}
-
-// -- StartMenuDirectoryPage
-
-/*!
-    \class QInstaller::StartMenuDirectoryPage
-    \inmodule QtInstallerFramework
-    \brief The StartMenuDirectoryPage class specifies the program group for the
-    product in the Windows Start menu.
-*/
-
-/*!
-    Constructs a Start menu directory selection page with \a core as parent.
-*/
-StartMenuDirectoryPage::StartMenuDirectoryPage(PackageManagerCore *core)
-    : PackageManagerPage(core)
-{
-    setPixmap(QWizard::WatermarkPixmap, QPixmap());
-    setObjectName(QLatin1String("StartMenuDirectoryPage"));
-    setColoredTitle(tr("Start Menu shortcuts"));
-    setColoredSubTitle(tr("Select the Start Menu in which you would like to create the program's "
-        "shortcuts. You can also enter a name to create a new directory."));
-
-    m_lineEdit = new QLineEdit(this);
-    m_lineEdit->setText(core->value(scStartMenuDir, productName()));
-    m_lineEdit->setObjectName(QLatin1String("StartMenuPathLineEdit"));
-
-    startMenuPath = core->value(QLatin1String("UserStartMenuProgramsPath"));
-    QStringList dirs = QDir(startMenuPath).entryList(QDir::AllDirs | QDir::NoDotAndDotDot);
-    if (core->value(scAllUsers, scFalse) == scTrue) {
-        startMenuPath = core->value(scAllUsersStartMenuProgramsPath);
-        dirs += QDir(startMenuPath).entryList(QDir::AllDirs | QDir::NoDotAndDotDot);
-    }
-    dirs.removeDuplicates();
-
-    m_listWidget = new QListWidget(this);
-    foreach (const QString &dir, dirs)
-        new QListWidgetItem(dir, m_listWidget);
-
-    QVBoxLayout *layout = new QVBoxLayout(this);
-    layout->addWidget(m_lineEdit);
-    layout->addWidget(m_listWidget);
-
-    setLayout(layout);
-
-    connect(m_listWidget, &QListWidget::currentItemChanged, this,
-        &StartMenuDirectoryPage::currentItemChanged);
-}
-
-/*!
-    Returns the program group for the product in the Windows Start menu.
-*/
-QString StartMenuDirectoryPage::startMenuDir() const
-{
-    return m_lineEdit->text().trimmed();
-}
-
-/*!
-    Sets \a startMenuDir as the program group for the product in the Windows
-    Start menu.
-*/
-void StartMenuDirectoryPage::setStartMenuDir(const QString &startMenuDir)
-{
-    m_lineEdit->setText(startMenuDir.trimmed());
-}
-
-/*!
-    Called when end users leave the page and the PackageManagerGui:currentPageChanged()
-    signal is triggered.
-*/
-void StartMenuDirectoryPage::leaving()
-{
-    packageManagerCore()->setValue(scStartMenuDir, startMenuPath + QDir::separator()
-        + startMenuDir());
-}
-
-void StartMenuDirectoryPage::currentItemChanged(QListWidgetItem *current)
-{
-    if (current)
-        setStartMenuDir(current->data(Qt::DisplayRole).toString());
-}
-
-
-// -- ReadyForInstallationPage
-
-/*!
-    \class QInstaller::ReadyForInstallationPage
-    \inmodule QtInstallerFramework
-    \brief The ReadyForInstallationPage class informs end users that the
-    installation can begin.
-*/
-
-/*!
-    Constructs a ready for installation page with \a core as parent.
-*/
-ReadyForInstallationPage::ReadyForInstallationPage(PackageManagerCore *core)
-    : PackageManagerPage(core)
-    , m_msgLabel(new QLabel)
-{
-    setPixmap(QWizard::WatermarkPixmap, QPixmap());
-    setObjectName(QLatin1String("ReadyForInstallationPage"));
-    updatePageListTitle();
-
-    QVBoxLayout *baseLayout = new QVBoxLayout();
-    baseLayout->setObjectName(QLatin1String("BaseLayout"));
-
-    QVBoxLayout *topLayout = new QVBoxLayout();
-    topLayout->setObjectName(QLatin1String("TopLayout"));
-
-    m_msgLabel->setWordWrap(true);
-    m_msgLabel->setObjectName(QLatin1String("MessageLabel"));
-    m_msgLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
-    topLayout->addWidget(m_msgLabel);
-    baseLayout->addLayout(topLayout);
-
-    QVBoxLayout *bottomLayout = new QVBoxLayout();
-    bottomLayout->setObjectName(QLatin1String("BottomLayout"));
-    bottomLayout->addStretch();
-
-    m_taskDetailsBrowser = new QTextBrowser(this);
-    m_taskDetailsBrowser->setReadOnly(true);
-    m_taskDetailsBrowser->setObjectName(QLatin1String("TaskDetailsBrowser"));
-    m_taskDetailsBrowser->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_taskDetailsBrowser->setVisible(false);
-    bottomLayout->addWidget(m_taskDetailsBrowser);
-    bottomLayout->setStretch(1, 10);
-    baseLayout->addLayout(bottomLayout);
-
-    setCommitPage(true);
-    setLayout(baseLayout);
-
-    connect(core, &PackageManagerCore::installerBinaryMarkerChanged,
-            this, &ReadyForInstallationPage::updatePageListTitle);
-}
-
-/*!
-    Initializes the page's fields based on values from fields on previous
-    pages. The text to display depends on whether the page is being used in an
-    installer, updater, or uninstaller.
-*/
-void ReadyForInstallationPage::entering()
-{
-    setComplete(false);
-
-    if (packageManagerCore()->isUninstaller()) {
-        m_taskDetailsBrowser->setVisible(false);
-        setButtonText(QWizard::CommitButton, tr("U&ninstall"));
-        setColoredTitle(tr("Ready to Uninstall"));
-        m_msgLabel->setText(tr("Setup is now ready to begin removing %1 from your computer.<br>"
-            "<font color=\"red\">The program directory %2 will be deleted completely</font>, "
-            "including all content in that directory!")
-            .arg(productName(),
-                QDir::toNativeSeparators(QDir(packageManagerCore()->value(scTargetDir))
-            .absolutePath())));
-        setComplete(true);
-        return;
-    } else if (packageManagerCore()->isMaintainer()) {
-        setButtonText(QWizard::CommitButton, tr("U&pdate"));
-        setColoredTitle(tr("Ready to Update Packages"));
-        m_msgLabel->setText(tr("Setup is now ready to begin updating your installation."));
-    } else {
-        Q_ASSERT(packageManagerCore()->isInstaller());
-        setButtonText(QWizard::CommitButton, tr("&Install"));
-        setColoredTitle(tr("Ready to Install"));
-        m_msgLabel->setText(tr("Setup is now ready to begin installing %1 on your computer.")
-            .arg(productName()));
-    }
-
-    QString htmlOutput;
-    bool componentsOk = packageManagerCore()->calculateComponents(&htmlOutput);
-    m_taskDetailsBrowser->setHtml(htmlOutput);
-    m_taskDetailsBrowser->setVisible(!componentsOk || LoggingHandler::instance().isVerbose());
-    setComplete(componentsOk);
-
-    QString spaceInfo;
-    if (packageManagerCore()->checkAvailableSpace(spaceInfo)) {
-        m_msgLabel->setText(QString::fromLatin1("%1 %2").arg(m_msgLabel->text(), spaceInfo));
-    } else {
-        m_msgLabel->setText(spaceInfo);
-        setComplete(false);
-    }
-}
-
-/*!
-    Called when end users leave the page and the PackageManagerGui:currentPageChanged()
-    signal is triggered.
-*/
-void ReadyForInstallationPage::leaving()
-{
-    setButtonText(QWizard::CommitButton, gui()->defaultButtonText(QWizard::CommitButton));
-}
-
-/*!
-    Updates page list title based on installer binary type.
-*/
-void ReadyForInstallationPage::updatePageListTitle()
-{
-    PackageManagerCore *core = packageManagerCore();
-    if (core->isInstaller())
-        setPageListTitle(tr("Ready to Install"));
-    else if (core->isMaintainer())
-        setPageListTitle(tr("Ready to Update"));
-    else if (core->isUninstaller())
-        setPageListTitle(tr("Ready to Uninstall"));
-}
-
 // -- PerformInstallationPage
 
 /*!
@@ -2667,19 +2300,57 @@ void ReadyForInstallationPage::updatePageListTitle()
 */
 PerformInstallationPage::PerformInstallationPage(PackageManagerCore *core)
     : PackageManagerPage(core)
-    , m_performInstallationForm(new PerformInstallationForm(this))
+    , m_performInstallationForm(new PerformInstallationForm(core->isInstaller(), this))
 {
     setPixmap(QWizard::WatermarkPixmap, QPixmap());
     setObjectName(QLatin1String("PerformInstallationPage"));
     updatePageListTitle();
 
-    m_performInstallationForm->setupUi(this);
+    QHBoxLayout* pBackGroundLayout = nullptr;
+    if (core->isInstaller()) {
+        pBackGroundLayout = new QHBoxLayout();
+        pBackGroundLayout->setContentsMargins(0, 0, 0, 0);
+        pBackGroundLayout->addItem(new QSpacerItem(0, 426, QSizePolicy::Ignored, QSizePolicy::Expanding));
+
+        QWidget* background = new QLabel(this);
+        background->setStyleSheet(QLatin1String("border-image: url(:/install_face.png);"));
+       
+        pBackGroundLayout->addWidget(background);
+    }
+
+    QHBoxLayout* pProgressLayout = new QHBoxLayout();
+    pProgressLayout->setContentsMargins(0, 0, 0, 0);
+    {
+        QWidget* widget = new QWidget(this);
+        widget->setFixedHeight(core->isInstaller() ? 92: 98);
+        m_performInstallationForm->setupUi(widget);
+
+        pProgressLayout->addWidget(widget);
+    }
+
+    QVBoxLayout* mainlayout = new QVBoxLayout(this);
+    mainlayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setButtonVisible(CustomTitle::CloseButton, false);
+    customTitle->setFixedHeight(32);
+
+    mainlayout->addWidget(customTitle);
+   
+    if (core->isInstaller()) {
+        mainlayout->addSpacing(-8);
+        customTitle->setTitle(tr("Installation guide"));
+
+        mainlayout->addLayout(pBackGroundLayout);
+        mainlayout->addStretch();
+        mainlayout->addSpacing(26);
+    }
+    mainlayout->addLayout(pProgressLayout);
+    mainlayout->addStretch();
+
     m_imageChangeTimer.setInterval(10000);
 
-    connect(ProgressCoordinator::instance(), &ProgressCoordinator::detailTextChanged,
-        m_performInstallationForm, &PerformInstallationForm::appendProgressDetails);
-    connect(ProgressCoordinator::instance(), &ProgressCoordinator::detailTextResetNeeded,
-        m_performInstallationForm, &PerformInstallationForm::clearDetailsBrowser);
     connect(m_performInstallationForm, &PerformInstallationForm::showDetailsChanged,
             this, &PerformInstallationPage::toggleDetailsWereChanged);
 
@@ -2704,8 +2375,6 @@ PerformInstallationPage::PerformInstallationPage(PackageManagerCore *core)
     connect(&m_imageChangeTimer, &QTimer::timeout,
             this, &PerformInstallationPage::changeCurrentImage);
 
-    m_performInstallationForm->setDetailsWidgetVisible(true);
-
     setCommitPage(true);
 }
 
@@ -2722,7 +2391,16 @@ PerformInstallationPage::~PerformInstallationPage()
 */
 bool PerformInstallationPage::isAutoSwitching() const
 {
-    return !m_performInstallationForm->isShowingDetails();
+    return true;
+}
+
+int PerformInstallationPage::nextId() const
+{
+    if(packageManagerCore()->status() == PackageManagerCore::Failure){
+        return PackageManagerCore::PesError;
+    } else {
+        return PackageManagerCore::PesFinished;
+    }
 }
 
 // -- protected
@@ -2736,7 +2414,24 @@ void PerformInstallationPage::entering()
 {
     setComplete(false);
 
-    m_performInstallationForm->enableDetails();
+    if (packageManagerCore()->isInstaller()) {
+        QString targetDir = packageManagerCore()->value(QLatin1String("TargetDir"));
+
+        QSettings setting(QSettings::NativeFormat, QSettings::UserScope,
+            packageManagerCore()->value(scPublisher),
+            packageManagerCore()->value(scName));
+
+        QString ConfigTargetDir(targetDir);
+        ConfigTargetDir = ConfigTargetDir.mid(0, ConfigTargetDir.lastIndexOf(QLatin1String("/")));
+        ConfigTargetDir = ConfigTargetDir.mid(0, ConfigTargetDir.lastIndexOf(QLatin1String("/")));
+        setting.setValue(QLatin1String(kConfigSetupName), ConfigTargetDir);
+        setting.sync();
+
+        QString version = packageManagerCore()->value(QLatin1String("Version"));
+        targetDir = targetDir + QDir::separator() + version;
+        packageManagerCore()->setValue(QLatin1String("TargetDir"), targetDir);
+    }
+
     emit setAutomatedPageSwitchEnabled(true);
 
     changeCurrentImage();
@@ -2745,7 +2440,7 @@ void PerformInstallationPage::entering()
         m_imageChangeTimer.start();
 
     if (LoggingHandler::instance().isVerbose()) {
-        m_performInstallationForm->toggleDetails();
+        
     }
     if (packageManagerCore()->isUninstaller()) {
         setButtonText(QWizard::CommitButton, tr("U&ninstall"));
@@ -2771,6 +2466,13 @@ void PerformInstallationPage::entering()
 */
 void PerformInstallationPage::leaving()
 {
+    QSettings setting(QSettings::NativeFormat, QSettings::UserScope,
+                      packageManagerCore()->value(scPublisher),
+                      packageManagerCore()->value(scName));
+    if (!packageManagerCore()->isInstaller()) {
+        setting.remove(QLatin1String(kConfigSetupName));
+    }
+
     setButtonText(QWizard::CommitButton, gui()->defaultButtonText(QWizard::CommitButton));
     m_imageChangeTimer.stop();
 }
@@ -2825,14 +2527,15 @@ void PerformInstallationPage::changeCurrentImage()
 void PerformInstallationPage::installationStarted()
 {
     m_performInstallationForm->startUpdateProgress();
+
+    QString ver_value = packageManagerCore()->value(QLatin1String("Version"));
+    m_performInstallationForm->setMessage(tr("Installing PES %1, do not turn off the software or power").arg(ver_value));
 }
 
 void PerformInstallationPage::installationFinished()
 {
     m_performInstallationForm->stopUpdateProgress();
     if (!isAutoSwitching()) {
-        m_performInstallationForm->setDetailsButtonEnabled(false);
-
         setComplete(true);
         setButtonText(QWizard::CommitButton, gui()->defaultButtonText(QWizard::NextButton));
     }
@@ -2841,6 +2544,7 @@ void PerformInstallationPage::installationFinished()
 void PerformInstallationPage::uninstallationStarted()
 {
     m_performInstallationForm->startUpdateProgress();
+    m_performInstallationForm->setMessage(tr("Uninstalling PES..."));
     if (QAbstractButton *cancel = gui()->button(QWizard::CancelButton))
         cancel->setEnabled(false);
 }
@@ -3085,5 +2789,1461 @@ void RestartPage::leaving()
 {
 }
 
+PesHomePage::PesHomePage(PackageManagerCore *core, PesLicenceInfo* info)
+    : PackageManagerPage(core)
+    , m_all_packages_fetched(false)
+    , background_widget_(new QWidget)
+    , welcom_label_(new QLabel)
+    , introduce_label_(new QLabel)
+    , install_button_(new QPushButton)
+    , space_label_(new QLabel)
+    , warning_button_(new QPushButton)
+    , licence_check_box_(new QCheckBox)
+    , user_service_btn_(new QPushButton)
+    , user_privacy_btn_(new QPushButton)
+    , licence_info_(info)
+{
+    QVBoxLayout* mid_layout = new QVBoxLayout();
+    mid_layout->setContentsMargins(0, 0, 0, 0);
+    {
+        background_widget_->setObjectName(QLatin1String("peshomepagebackground"));
+
+        welcom_label_->setText(tr("Welcome to install PES"));
+        welcom_label_->setObjectName(QLatin1String("WelcomLabel"));
+
+        introduce_label_->setText(tr("Just for you to better use the computer"));
+        introduce_label_->setObjectName(QLatin1String("IntroduceLabel"));
+
+        QVBoxLayout* background_widget_layout_ = new QVBoxLayout();
+
+        background_widget_layout_->setContentsMargins(32, 0, 0, 0);
+        background_widget_layout_->addSpacing(72);
+        background_widget_layout_->addWidget(welcom_label_);
+        background_widget_layout_->addSpacing(4);
+        background_widget_layout_->addWidget(introduce_label_);
+        background_widget_layout_->addSpacerItem(new QSpacerItem(0, 203, QSizePolicy::Ignored, QSizePolicy::Expanding));
+        background_widget_->setLayout(background_widget_layout_);
+
+        mid_layout->addWidget(background_widget_);
+        /*
+        QLabel* space = new QLabel();
+        space->setFixedSize(800, 6);
+        space->setStyleSheet(QLatin1String("border-image: url(:/space.png)"));
+
+        mid_layout->addSpacing(-6);
+        mid_layout->addWidget(space);*/
+    }
+
+    QVBoxLayout* dir_choose_layout = new QVBoxLayout();
+    dir_choose_layout->setContentsMargins(32, 10, 32, 0);
+    dir_choose_layout->setAlignment(Qt::AlignLeft);
+    {
+        dir_choose_label_ = new QLabel(this);
+        dir_choose_label_->setText(tr("Please select an installation directory:"));
+       
+        // file select browse
+//        QSettings last_setting(QSettings::NativeFormat, QSettings::UserScope,
+//            packageManagerCore()->value(scPublisher),
+//            packageManagerCore()->value(scName));
+
+//        target_dir_ = last_setting.value(QLatin1String(kConfigSetupName)).toString();
+        if (target_dir_.isEmpty() || !QDir(target_dir_).exists()) {
+            target_dir_ = packageManagerCore()->value(scTargetDir);
+        }
+            
+        target_dir_ = QDir::toNativeSeparators(QDir(target_dir_).absolutePath());
+
+        dir_text_ = new QLineEdit(this);
+        dir_text_->setText(target_dir_);
+        dir_text_->setEnabled(false);
+        dir_text_->setObjectName(QLatin1String("chooseDirText"));
+
+        dir_choose_button_ = new QPushButton(this);
+        dir_choose_button_->setText(tr("Browse"));
+        dir_choose_button_->setObjectName(QLatin1String("chooseDirButton"));
+
+        QHBoxLayout* dir_layout = new QHBoxLayout;
+        dir_layout->setSpacing(0);
+        dir_layout->setAlignment(Qt::AlignLeft);
+        dir_layout->addWidget(dir_text_);
+        dir_layout->addSpacing(-1);
+        dir_layout->addWidget(dir_choose_button_);
+
+       
+        dir_choose_layout->addWidget(dir_choose_label_);
+        dir_choose_layout->addLayout(dir_layout);
+    }
+    
+    // space label
+    QString htmlOutput;
+    bool componentsOk = packageManagerCore()->calculateComponents(&htmlOutput);
+    setComplete(componentsOk);
+    space_label_->setObjectName(QLatin1String("spaceLabel"));
+
+    QIcon icon(QPixmap(QLatin1String(":/worningIcon.png")));
+    warning_button_->setIcon(icon);
+    warning_button_->setIconSize(QSize(16, 16));
+    warning_button_->setObjectName(QLatin1String("worningbutton"));
+    warning_button_->setText(tr("Not enough space"));
+    warning_button_->adjustSize();
+
+    QHBoxLayout* space_layout = new QHBoxLayout();
+    space_layout->setContentsMargins(0, 0, 0, 0);
+    space_layout->setAlignment(Qt::AlignLeft);
+    space_layout->addWidget(space_label_);
+    space_layout->addSpacing(8);
+    space_layout->addWidget(warning_button_);
+
+    dir_choose_layout->addLayout(space_layout);
+
+    mid_layout->addLayout(dir_choose_layout);
+
+    QHBoxLayout* licence_layout = new QHBoxLayout;
+    licence_layout->setMargin(0);
+    licence_layout->setSpacing(0);
+    licence_layout->addSpacing(32);
+    {
+        // user_service  and install_button
+        user_service_btn_->setText(tr("User Services Agreement"));
+        user_service_btn_->setObjectName(QLatin1String("userServiceButton"));
+        QFont fs(user_service_btn_->font());
+        fs.setUnderline(true);
+        user_service_btn_->setFont(fs);
+
+        // user_privacy
+        user_privacy_btn_->setObjectName(QLatin1String("userPrivacyButton"));
+        user_privacy_btn_->setText(tr("Privacy Policy"));
+        QFont fp(user_privacy_btn_->font());
+        fp.setUnderline(true);
+        user_privacy_btn_->setFont(fp);
+
+        licence_check_box_->setText(tr("read and agree "));
+
+        install_button_->setText(tr("Install Now"));
+        install_button_->setFixedSize(109, 45);
+        install_button_->setObjectName(QLatin1String("startButton"));
+
+        licence_layout->addWidget(licence_check_box_);
+        licence_layout->addWidget(user_service_btn_);
+        licence_layout->addSpacing(1);
+        licence_layout->addWidget(user_privacy_btn_);
+        licence_layout->addItem(new QSpacerItem(388, 0, QSizePolicy::Expanding, QSizePolicy::Ignored));;
+        licence_layout->addWidget(install_button_);
+        licence_layout->addSpacing(32);
+    }
+    
+    QVBoxLayout* main_layout = new QVBoxLayout(this);
+    main_layout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setTitle(tr("Installation guide"));
+    customTitle->setFixedHeight(32);
+
+    main_layout->addWidget(customTitle);
+    main_layout->addSpacing(-8);
+    main_layout->addLayout(mid_layout);
+    main_layout->addLayout(licence_layout);
+    main_layout->addSpacing(26);
+    
+    connectAll();
+
+    setLicenceAgreed(true);
+
+    tool_tip_ = new PesToolTip(this);
+    tool_tip_->setGeometry(208, 58, 440, 48);
+    tool_tip_->setVisible(false);
+}
+
+void PesHomePage::setLicenceAgreed(bool agree)
+{
+    licence_info_->is_licence_agreed = agree;
+}
+
+void PesHomePage::initializePage()
+{
+    if (!packageManagerCore()->checkEnv()) {
+        return;
+    }
+
+    bool bGpuExist = packageManagerCore()->checkGpuExists();
+    if (!bGpuExist) {
+        if (gui()->isSilent()) {
+            qApp->exit(QInstaller::PackageManagerCore::GpuNotExist);
+            return;
+        }
+        PesEnvDetectMessageBox* messageBox = new PesEnvDetectMessageBox(MessageBoxHandler::currentBestSuitParent(), tr("MT card not detected and cannot be installed"));
+        int ret = messageBox->exec();
+        if ((ret == QMessageBox::Cancel) | (ret == QMessageBox::Close)) {
+            qApp->exit(0);
+        }
+        else if(ret == QMessageBox::Ok) {
+            initializePage();
+        }
+    }
+
+#ifdef Q_OS_WIN
+    typedef void(__stdcall*NTPROC)(DWORD*, DWORD*, DWORD*);
+    HINSTANCE hinst = LoadLibrary(TEXT("ntdll.dll"));
+    NTPROC GetNtVersionNumbers = (NTPROC)GetProcAddress(hinst, "RtlGetNtVersionNumbers");
+    DWORD dwMajor, dwMinor, dwBuildNumber;
+    GetNtVersionNumbers(&dwMajor, &dwMinor, &dwBuildNumber);
+    if(dwMajor < 10){
+        QWidget *p = MessageBoxHandler::currentBestSuitParent();
+        if (p != nullptr) {
+            p->hide();
+        }
+        if (gui()->isSilent()) {
+            qApp->exit(QInstaller::PackageManagerCore::SystemNotSupport);
+            return;
+        }
+        PesEnvDetectMessageBox *messageBox = new PesEnvDetectMessageBox(MessageBoxHandler::currentBestSuitParent(), tr("You need at least Windows 10, Version Not Supported"));
+        int ret = messageBox->exec();
+        if ((ret == QMessageBox::Cancel) | (ret == QMessageBox::Close)) {
+            qApp->exit(0);
+        }
+        else if(ret == QMessageBox::Ok) {
+            initializePage();
+        }
+    }
+
+    QString path = QCoreApplication::applicationDirPath() + QLatin1String("/pes_resizebar_temp");
+    QDir dir(path);
+    if (dir.exists() || dir.mkdir(path))
+    {
+        QFile::copy(QLatin1String(":/resizebar/didriver64.sys"), path + QLatin1String("/didriver64.sys"));
+        QFile::copy(QLatin1String(":/resizebar/pciutil64.dll"), path + QLatin1String("/pciutil64.dll"));
+        QFile::copy(QLatin1String(":/resizebar/resizebar_detect.exe"), path + QLatin1String("/resizebar_detect.exe"));
+
+        std::shared_ptr<QProcess> process = std::make_shared<QProcess>(new QProcess(this));
+        int flag = process->execute(path + QLatin1String("/resizebar_detect.exe"));
+
+        if (flag != 0)
+        {
+            QWidget *p = MessageBoxHandler::currentBestSuitParent();
+            if (p != nullptr) {
+                p->hide();
+            }
+            if (gui()->isSilent()) {
+                qApp->exit(QInstaller::PackageManagerCore::GpuNotExist);
+                dir.removeRecursively();
+                return;
+            }
+            PesEnvDetectMessageBox* messageBox = new PesEnvDetectMessageBox(MessageBoxHandler::currentBestSuitParent(), tr("resizebar check error, error code: %1").arg(int(flag)));
+            int ret = messageBox->exec();
+            if ((ret == QMessageBox::Cancel) | (ret == QMessageBox::Close)) {
+                dir.removeRecursively();
+                qApp->exit(0);
+            }
+            else if (ret == QMessageBox::Ok) {
+                initializePage();
+            }
+        }
+        else {
+            dir.removeRecursively();
+        }
+    }
+#endif
+}
+
+int PesHomePage::nextId() const
+{
+    if (isSilent()) {
+        return PackageManagerCore::End;
+    }
+
+    if (!licence_info_->is_licence_agreed || force_to_licence_page_) {
+        return PackageManagerCore::PesLicence;
+    } else {
+        return PackageManagerCore::PesInstallation;
+    }
+}
+
+void PesHomePage::entering()
+{
+    if (isSilent()) return;
+
+    licence_check_box_->setChecked(licence_info_->is_licence_agreed);
+    need_space_ = packageManagerCore()->requiredDiskSpace();
+
+    target_dir_= QDir::toNativeSeparators(QDir(target_dir_).absolutePath());
+
+    checkCanInstall(target_dir_);
+
+    QString dirTxt = target_dir_;
+    QString publisher = packageManagerCore()->value(scPublisher);
+    QString title = packageManagerCore()->value(scTitle);
+    QString base_path = QDir::separator() + publisher + QDir::separator() + title;
+    if (!dirTxt.contains(base_path))
+    {
+        dirTxt = dirTxt + base_path;
+    }
+
+    dir_text_->setText(dirTxt);
+}
+
+void PesHomePage::connectAll()
+{
+    connect(install_button_, &QAbstractButton::clicked, this, &PesHomePage::startInstall);
+    connect(dir_choose_button_, &QAbstractButton::clicked, this, &PesHomePage::chooseDirectory);
+    connect(licence_check_box_, &QAbstractButton::toggled, this, &PesHomePage::setLicenceAgreed);
+    connect(licence_check_box_, &QAbstractButton::toggled, this, &PesHomePage::updateButtonBackground);
+    connect(user_service_btn_, &QAbstractButton::clicked, this, &PesHomePage::showUserService);
+    connect(user_privacy_btn_, &QAbstractButton::clicked, this, &PesHomePage::showUserPrivacy);
+}
+
+void PesHomePage::startInstall()
+{
+    force_to_licence_page_ = false;
+    if(dir_text_->text().isEmpty()) {
+        return;
+    }
+    if(!licence_info_->is_licence_agreed) {
+        PesLicenMessageBox* pLicenseMsgBox = new PesLicenMessageBox(MessageBoxHandler::currentBestSuitParent());
+        int ret = pLicenseMsgBox->exec();
+        if(ret == QMessageBox::Ok) {
+            licence_check_box_->setChecked(true);
+        }
+        return;
+    }
+
+    bool bCanInstall = checkCanInstall(target_dir_);
+    if (!bCanInstall) {
+        return;
+    }
+
+    QList<ProcessInfo> pesProcessInfo;
+    QList<ProcessInfo> processInfos = runningProcesses();
+    Q_FOREACH(const ProcessInfo & item, processInfos) {
+        if (item.name.contains(QLatin1String("pes_gui.exe"))) {
+            pesProcessInfo.push_back(item);
+        }
+    }
+
+    if (!pesProcessInfo.isEmpty()) {
+        ProcessDetectMessageBox* pMsgBox = new ProcessDetectMessageBox(MessageBoxHandler::currentBestSuitParent());
+        int ret = pMsgBox->exec();
+
+        if (ret == QMessageBox::Ok) {
+            Q_FOREACH(const ProcessInfo& item, pesProcessInfo) {
+                killProcess(item, 100);
+            }
+            startInstall();
+            return;
+        }
+        else if (ret == QMessageBox::Retry) {
+            startInstall();
+            return;
+        }
+        else {
+            return;
+        }
+    }
+    
+    packageManagerCore()->setValue(scTargetDir, dir_text_->text());
+    wizard()->next();
+}
+
+void PesHomePage::showUserService()
+{
+    force_to_licence_page_ = true;
+    licence_info_->licence_type = PesLicenceInfo::UserService;
+    wizard()->next();
+}
+
+void PesHomePage::showUserPrivacy()
+{
+    force_to_licence_page_ = true;
+    licence_info_->licence_type = PesLicenceInfo::UserPrivacy;
+    wizard()->next();
+}
+
+void PesHomePage::chooseDirectory()
+{
+    QString target_dir = packageManagerCore()->value(scTargetDir);
+    target_dir = QDir::toNativeSeparators(QDir(target_dir).absolutePath());
+    QString dir_name = QFileDialog::getExistingDirectory(this, tr("Open Directory"),
+                                                         target_dir,
+                                                         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+    if (!dir_name.isEmpty()) {
+        target_dir_ = dir_name;
+
+        QString publisher = packageManagerCore()->value(scPublisher);
+        QString title = packageManagerCore()->value(scTitle);
+        dir_name = dir_name + QDir::separator() + publisher + QDir::separator() + title;
+        dir_name = QDir::toNativeSeparators(QDir(dir_name).absolutePath());
+
+        dir_text_->setText(dir_name);
+
+        checkCanInstall(target_dir_);
+    }
+}
+
+bool PesHomePage::setSpaceMessage(quint64 need_space, quint64 available_space)
+{
+    if(need_space >= available_space) {
+        space_label_->setText(tr("Space required: %1   Available space: %2")
+                                  .arg(humanReadableSize(need_space))
+                                  .arg(humanReadableSize(available_space)) );
+        warning_button_->setVisible(true);
+        warning_button_->setText(tr("Not enough space"));
+        dir_text_->setStyleSheet(QLatin1String("color: rgb(255, 103, 29);"));
+
+        tool_tip_->setMessage(tr("There is not enough disk space, please select again"));
+        tool_tip_->start();
+        return false;
+    } else{
+        space_label_->setText(tr("Space required: %1   Available space: %2")
+                                  .arg(humanReadableSize(need_space))
+                                  .arg(humanReadableSize(available_space)) );
+        warning_button_->setVisible(false);
+        dir_text_->setStyleSheet(QLatin1String("color: rgb(51, 51, 51);"));
+        tool_tip_->stop();
+        return true;
+    }
+}
+
+void PesHomePage::updateButtonBackground(bool agree)
+{
+    if(agree) {
+        install_button_->setStyleSheet(
+            QLatin1String("QPushButton{ \
+                    background-color: rgb(255, 103, 29);\
+                    border: none;\
+                    border-radius: 4px;\
+                    font-weight: 700;\
+                    font-size: 13px;\
+                }\
+                QPushButton:hover{\
+                     background-color: rgb(255, 118, 52);}\
+                QPushButton:pressed {\
+                    background-color: rgb(240, 88, 14);}"));
+    } else {
+        install_button_->setStyleSheet(
+            QLatin1String("QPushButton{ \
+                    background-color: rgba(255, 103, 29, 0.5);\
+                    border: none;\
+                    border-radius: 4px;\
+                    font-weight: 700;\
+                    font-size: 13px;\
+                };"));
+    }
+}
+
+bool QInstaller::PesHomePage::checkDirWritable(const QString& dirPath)
+{
+	bool writable = true;
+#ifdef WIN32
+    QString winDirPath = QDir::toNativeSeparators(dirPath);
+    const std::wstring dirPath_ = winDirPath.toStdWString();
+    HANDLE hDir = CreateFile(dirPath_.c_str(), FILE_TRAVERSE | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS, NULL);
+
+    if (hDir != INVALID_HANDLE_VALUE) CloseHandle(hDir);
+    writable = (hDir != INVALID_HANDLE_VALUE);
+#else
+    QFileInfo file_info(dirPath);
+    writable = file_info.isWritable();
+#endif
+
+	if (writable) {
+        qCInfo(QInstaller::lcInstallerInstallLog) << dirPath << "is writable";
+    }
+    else {
+        qCWarning(QInstaller::lcInstallerInstallLog) << dirPath << "not writable" << "error code: " << GetLastError();
+    }
+    return writable;
+}
+
+bool QInstaller::PesHomePage::checkCanInstall(const QString& dirPath)
+{
+    bool bCanInstall = false;
+    quint64 availabe_size = VolumeInfo::fromPath(dirPath).availableSize();
+    if (setSpaceMessage(need_space_, availabe_size)) {
+        if (!checkDirWritable(dirPath)) {
+            warning_button_->setVisible(true);
+            warning_button_->setText(tr("Path permissions Not Open"));
+
+            tool_tip_->setMessage(tr("This Path permissions Not Open"));
+            tool_tip_->start();
+        }
+        else {
+            tool_tip_->stop();
+            bCanInstall = true;
+        }
+    }
+    return bCanInstall;
+}
+
+PesLicencePage::PesLicencePage(PackageManagerCore *core, PesLicenceInfo* info)
+    : PackageManagerPage(core)
+    , back_button_(new QPushButton)
+    , licence_info_(info)
+{
+    QVBoxLayout* main_layout = new QVBoxLayout(this);
+    main_layout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, 27 + kShadowLen);
+    
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setTitle(tr("Installation guide"));
+
+    main_layout->addWidget(customTitle);
+    main_layout->addSpacing(-8);
+
+    text_edit_ = new QTextEdit(this);
+    text_edit_->setContextMenuPolicy(Qt::NoContextMenu);
+    text_edit_->setReadOnly(true);
+    text_edit_->setObjectName(QLatin1String("licensetext"));
+    text_edit_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    text_edit_->setFixedHeight(446);
+
+    text_edit_->setStyleSheet(QLatin1String("QTextEdit {margin-right:6px, color: #F5F5F5;}"));
+
+    text_edit_->verticalScrollBar()->setStyleSheet(QLatin1String(
+        "QScrollArea {background-color: #F5F5F5;}" \
+        "QScrollBar:vertical{border: none; width: 6px; background-color:transparent; border-radius:37px;}"\
+        "QScrollBar::handle:vertical{background-color:rgba(64, 65, 71, 0.2); width: 6px; border-radius:37px;}"
+        "QScrollBar::add-page:Vertical, QScrollBar::sub-page:Vertical{ background: #F5F5F5; border-radius:37px;}"
+        "QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical { height: 0px; border-radius:37px; }"));
+
+    back_button_->setObjectName(QLatin1String("licenseBackbutton"));
+    back_button_->setText(tr("Back"));
+
+    main_layout->addWidget(text_edit_);
+    main_layout->addSpacing(27);
+    main_layout->addWidget(back_button_, 0, Qt::AlignCenter);
+    main_layout->addStretch();
+
+    connect(back_button_, &QAbstractButton::clicked, this, &PesLicencePage::backeButtonClicked);
+}
+
+void PesLicencePage::entering()
+{
+    packageManagerCore()->calculateComponentsToInstall();
+    foreach (QInstaller::Component *component, packageManagerCore()->orderedComponentsToInstall())
+        packageManagerCore()->addLicenseItem(component->licenses());
+
+    QHash<QString, QMap<QString, QString>> priorityHash = packageManagerCore()->sortedLicenses();
+
+    QStringList priorities = priorityHash.keys();
+    if(priorities.length() == 0) {
+        qCWarning(QInstaller::lcDeveloperBuild) << "no licence find";
+    }
+    if(priorities.length() > 1)
+        qCInfo(QInstaller::lcDeveloperBuild) << "licence have more than one, use first";
+
+    QString priority = priorities.first();
+    QMap<QString, QString> licenses = priorityHash.value(priority);
+    QString license_txt;
+
+    if (licence_info_->licence_type == PesLicenceInfo::UserService) {
+        license_txt = licenses.value(QLatin1String("UserService"));
+    }
+    else {
+        license_txt = licenses.value(QLatin1String("UserPrivacy"));
+    }
+    text_edit_->setText(license_txt);
+
+    packageManagerCore()->clearLicenses();
+}
+
+void PesLicencePage::backeButtonClicked()
+{
+    wizard()->back();
+}
+
+PesFinishPage::PesFinishPage(PackageManagerCore *core)
+    : PackageManagerPage(core)
+    , result_page_(nullptr)
+    , uninstall_result_page_(nullptr)
+{
+    if (core->isInstaller()) {
+        initInstallFinishedPage();
+    }
+    else {
+        initUninstallFinishedPage();
+    }
+}
+
+void PesFinishPage::handleReboot()
+{
+    packageManagerCore()->rebootSystem();
+}
+
+void PesFinishPage::handleStartNow()
+{
+    const QString program =
+        packageManagerCore()->replaceVariables(packageManagerCore()->value(scRunProgram));
+
+    const QStringList args = packageManagerCore()->replaceVariables(packageManagerCore()
+                                                                        ->values(scRunProgramArguments));
+    if (program.isEmpty())
+        return;
+
+    qCDebug(QInstaller::lcInstallerInstallLog) << "starting" << program << args;
+    QProcess::startDetached(program, args);
+    wizard()->close();
+}
+
+void PesFinishPage::handleFinish()
+{
+    wizard()->close();
+}
+
+void QInstaller::PesFinishPage::initInstallFinishedPage()
+{
+    QVBoxLayout* pLayout = new QVBoxLayout(this);
+    pLayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setTitle(tr("Installation guide"));
+    customTitle->setButtonVisible(CustomTitle::CloseButton, false);
+
+    pLayout->addWidget(customTitle);
+
+    result_page_ = new PesResultPage(this);
+    result_page_->initUI();
+
+    QPixmap pixmap(QLatin1String(":/install_yes.png"));
+    result_page_->icon_pixmap_= pixmap;
+
+    if (packageManagerCore()->isInstaller()) {
+        result_page_->messageLabel->setText(tr("Install Failed"));
+    }
+    else {
+        result_page_->messageLabel->setText(tr("UnInstall Failed"));
+    }
+    pLayout->addSpacing(-8);
+    pLayout->addWidget(result_page_);
+
+    if (packageManagerCore()->isInstaller()) {
+        result_page_->messageLabel->setText(tr("Finish Install"));
+        result_page_->detailLabel->setText(packageManagerCore()->settings().value(scInstallFinish).toString());
+    }
+    else {
+        result_page_->messageLabel->setText(tr("Finish Uninstall"));
+        result_page_->detailLabel->setText(packageManagerCore()->settings().value(scUninstallFinish).toString());
+    }
+
+    if (packageManagerCore()->settings().needRestart()) {
+        result_page_->leftButton->setText(tr("Reboot Later"));
+        result_page_->rightButton->setText(tr("Reboot Now"));
+        connect(result_page_->leftButton, &QAbstractButton::clicked, this, &PesFinishPage::handleFinish);
+        connect(result_page_->rightButton, &QAbstractButton::clicked, this, &PesFinishPage::handleReboot);
+    }
+    else {
+        result_page_->leftButton->setVisible(false);
+        result_page_->rightButton->setText(tr("Start Now"));
+        connect(result_page_->rightButton, &QAbstractButton::clicked, this, &PesFinishPage::handleStartNow);
+    }
+
+    setCommitPage(true);
+}
+
+void QInstaller::PesFinishPage::initUninstallFinishedPage()
+{
+    QVBoxLayout* pLayout = new QVBoxLayout(this);
+    pLayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setButtonVisible(CustomTitle::CloseButton, false);
+    pLayout->addWidget(customTitle);
+    
+    uninstall_result_page_ = new PesUnInstallResultPage(true, this);
+    uninstall_result_page_->initUI();
+   
+    pLayout->addSpacing(-8);
+    pLayout->addWidget(uninstall_result_page_);
+
+    uninstall_result_page_->iconLabel_->setText(tr("Restart Computer to complete UnInstallation"));
+
+    uninstall_result_page_->leftButton_->setText(tr("Reboot Later"));
+    uninstall_result_page_->rightButton_->setText(tr("Reboot Now"));
+
+    connect(uninstall_result_page_->leftButton_, &QAbstractButton::clicked, this, &PesFinishPage::handleFinish);
+    connect(uninstall_result_page_->rightButton_, &QAbstractButton::clicked, this, &PesFinishPage::handleReboot);
+
+    setCommitPage(true);
+}
+
+PesUninstallHomePage::PesUninstallHomePage(PackageManagerCore *core)
+    : PackageManagerPage(core)
+    , cancel_btn_(nullptr)
+    , uninstall_btn_(nullptr)
+    , clear_account_info_(false)
+{
+    QVBoxLayout* pLayout = new QVBoxLayout(this);
+    pLayout->setContentsMargins(kShadowLen, kShadowLen , kShadowLen, kShadowLen);
+
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setButtonVisible(CustomTitle::CloseButton, false);
+    pLayout->addWidget(customTitle);
+
+    QHBoxLayout* pMessageLayout = new QHBoxLayout();
+    pMessageLayout->setContentsMargins(0, 0, 0, 0);
+    {
+        QLabel* pTextLabel = new QLabel(this);
+        pTextLabel->setObjectName(QString::fromUtf8("uninstallLabelMessage"));
+        pTextLabel->setText(tr("Are you sure to uninstall PES?"));
+
+        pMessageLayout->addStretch(20);
+        pMessageLayout->addWidget(pTextLabel);
+        pMessageLayout->addStretch(167);
+    }
+
+    QHBoxLayout* pClearAccoutLayout = new QHBoxLayout();
+    pClearAccoutLayout->setContentsMargins(0, 0, 0, 0);
+    {
+        QCheckBox* clearAccountCheckBox = new QCheckBox(this);
+        clearAccountCheckBox->setObjectName(QLatin1String("ClearAccountCheckBox"));
+        clearAccountCheckBox->setText(tr("Clear Account"));
+
+        pClearAccoutLayout->addStretch(223);
+        pClearAccoutLayout->addWidget(clearAccountCheckBox);
+        pClearAccoutLayout->addStretch(20);
+
+        connect(clearAccountCheckBox, SIGNAL(toggled(bool)), this, SLOT(onClearAccountToggle(bool)));
+    }
+
+    QHBoxLayout* pBtnLayout = new QHBoxLayout();
+    pBtnLayout->setContentsMargins(0, 0, 0, 0);
+    {
+        cancel_btn_ = new QPushButton(this);
+        cancel_btn_->setText(tr("Cancel"));
+        cancel_btn_->setObjectName(QLatin1String("cancelButton"));
+
+        uninstall_btn_ = new QPushButton(this);
+        uninstall_btn_->setText(tr("UnInstall"));
+        uninstall_btn_->setObjectName(QLatin1String("agreeButton"));
+
+        pBtnLayout->addStretch(179);
+        pBtnLayout->addWidget(cancel_btn_);
+        pBtnLayout->addStretch(10);
+        pBtnLayout->addWidget(uninstall_btn_);
+        pBtnLayout->addStretch(20);
+    }
+
+    pLayout->addStretch(22);
+    pLayout->addLayout(pMessageLayout);
+    pLayout->addStretch(12);
+    pLayout->addLayout(pClearAccoutLayout);
+    pLayout->addStretch(11);
+    pLayout->addLayout(pBtnLayout);
+    pLayout->addStretch(20);
+
+    connect(cancel_btn_, &QAbstractButton::clicked, this, &PesUninstallHomePage::cancelUninstall);
+    connect(uninstall_btn_, &QAbstractButton::clicked, this, &PesUninstallHomePage::startUninstall);
+    setCommitPage(true);
+}
+
+void PesUninstallHomePage::startUninstall()
+{
+    QList<ProcessInfo> pesProcessInfo;
+    QList<ProcessInfo> processInfos = runningProcesses();
+    Q_FOREACH(const ProcessInfo & item, processInfos) {
+        if (item.name.contains(QLatin1String("pes_gui.exe"))) {
+            pesProcessInfo.push_back(item);
+        }
+    }
+
+    if (!pesProcessInfo.isEmpty()) {
+        Q_FOREACH(const ProcessInfo& item, pesProcessInfo) {
+            killProcess(item);
+        }
+    }
+
+    if (clear_account_info_) {
+        const QString base_path = QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + QLatin1String("/.mthreads");
+        QDir baseDir(QFileInfo(base_path).absoluteFilePath());
+        if (baseDir.exists()) {
+            baseDir.removeRecursively();
+        }
+    }
+    wizard()->next();
+}
+
+void PesUninstallHomePage::cancelUninstall()
+{
+    wizard()->button(QWizard::CancelButton)->click();
+}
+
+void QInstaller::PesUninstallHomePage::onClearAccountToggle(bool bChecked)
+{
+    clear_account_info_ = bChecked;
+}
+
+PesErrorPage::PesErrorPage(PackageManagerCore* core)
+    : PackageManagerPage(core)
+    , result_page_(nullptr)
+    , uninstall_result_page_(nullptr)
+{
+    if (core->isInstaller()) {
+        initInstallErrorPage();
+    }
+    else {
+        initUninstallErrorPage();
+    }
+}
+void PesErrorPage::entering()
+{
+    QString msg = packageManagerCore()->error();
+    if(packageManagerCore()->isInstaller() && !packageManagerCore()->settings().value(scInstallError).toString().isEmpty()){
+        msg += QLatin1String("\n") + packageManagerCore()->settings().value(scInstallError).toString();
+    } else if(packageManagerCore()->isUninstaller() && !packageManagerCore()->settings().value(scUninstallError).toString().isEmpty()) {
+        msg += QLatin1String("\n") + packageManagerCore()->settings().value(scUninstallError).toString();
+    }
+    result_page_->detailLabel->setText(msg);
+}
+
+void PesErrorPage::handleFinish()
+{
+    wizard()->close();
+}
+
+void QInstaller::PesErrorPage::paintEvent(QPaintEvent* event)
+{
+    QPainter painter(this);
+    
+    QRect iconRect(0, 32, 0, 392 + 34);
+    painter.fillRect(iconRect, 0xF0F0F0);
+}
+
+void QInstaller::PesErrorPage::initInstallErrorPage()
+{
+    QVBoxLayout* pLayout = new QVBoxLayout(this);
+    pLayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setTitle(tr("Installation guide"));
+    customTitle->setButtonVisible(CustomTitle::CloseButton, false);
+
+    pLayout->addWidget(customTitle);
+
+    result_page_ = new PesResultPage(this);
+    result_page_->initUI();
+
+    QPixmap pixmap(QLatin1String(":/failed.png"));
+    result_page_->icon_pixmap_ = pixmap;
+
+    result_page_->messageLabel->setText(tr("Install Failed"));
+   
+    result_page_->leftButton->setVisible(false);
+    result_page_->rightButton->setText(tr("Exit"));
+
+    pLayout->addSpacing(-8);
+    pLayout->addWidget(result_page_);
+
+    connect(result_page_->rightButton, &QAbstractButton::clicked, this, &PesErrorPage::handleFinish);
+    setCommitPage(true);
+}
+
+void QInstaller::PesErrorPage::initUninstallErrorPage()
+{
+    QVBoxLayout* pLayout = new QVBoxLayout(this);
+    pLayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    auto customTitle = new CustomTitle(this);
+    customTitle->setObjectName(QLatin1String("CustomTitle"));
+    customTitle->setButtonVisible(CustomTitle::CloseButton, false);
+
+    pLayout->addWidget(customTitle);
+
+    uninstall_result_page_ = new PesUnInstallResultPage(false, this);
+    uninstall_result_page_->initUI();
+
+    uninstall_result_page_->iconLabel_->setText(tr("UnInstall Failed"));
+
+    uninstall_result_page_->leftButton_->setVisible(false);
+    uninstall_result_page_->rightButton_->setText(tr("Close"));
+
+    pLayout->addWidget(uninstall_result_page_);
+
+    connect(uninstall_result_page_->rightButton_, &QAbstractButton::clicked, this, &PesErrorPage::handleFinish);
+
+    setCommitPage(true);
+}
+
+QInstaller::PesResultPage::PesResultPage(QWidget* parent)
+    : QWidget(parent)
+{
+}
+
+QInstaller::PesResultPage::~PesResultPage()
+{
+}
+
+void QInstaller::PesResultPage::initUI()
+{
+    QVBoxLayout* verticalLayout = new QVBoxLayout(this);
+    verticalLayout->setContentsMargins(0, 0, 0, 0);
+    verticalLayout->setSpacing(0);
+    verticalLayout->setObjectName(QString::fromUtf8("verticalLayout"));
+
+    messageLabel = new QLabel(this);
+    messageLabel->setObjectName(QString::fromUtf8("messageLabel"));
+    messageLabel->setAlignment(Qt::AlignCenter);
+    messageLabel->setWordWrap(true);
+
+    detailLabel = new QLabel(this);
+    detailLabel->setObjectName(QString::fromUtf8("detailLabel"));
+    detailLabel->setAlignment(Qt::AlignCenter);
+    detailLabel->setWordWrap(true);
+
+    QHBoxLayout* horizontalLayout = new QHBoxLayout();
+    horizontalLayout->setContentsMargins(0, 0, 0, 0);
+    horizontalLayout->setSpacing(20);
+    horizontalLayout->setObjectName(QString::fromUtf8("horizontalLayout"));
+    {
+        leftButton = new QPushButton(this);
+        leftButton->setObjectName(QString::fromUtf8("leftButton"));
+        leftButton->setFixedSize(QSize(109, 46));
+
+        rightButton = new QPushButton(this);
+        rightButton->setObjectName(QString::fromUtf8("rightButton"));
+        rightButton->setFixedSize(QSize(109, 46));
+
+        horizontalLayout->addStretch();
+        horizontalLayout->addWidget(leftButton);
+        horizontalLayout->addWidget(rightButton);
+        horizontalLayout->addStretch();
+    }
+
+    QSpacerItem* spacer = new QSpacerItem(0, 0, QSizePolicy::Ignored, QSizePolicy::MinimumExpanding);
+    verticalLayout->addItem(spacer);
+
+    verticalLayout->addWidget(messageLabel);
+    verticalLayout->addSpacing(8);
+    verticalLayout->addWidget(detailLabel);
+    verticalLayout->addSpacing(99);
+    verticalLayout->addLayout(horizontalLayout);
+    verticalLayout->addSpacing(53);
+}
+
+void QInstaller::PesResultPage::paintEvent(QPaintEvent* event)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    QRect bgRect(0, 0, width(), height() - 152);
+    painter.fillRect(bgRect, 0xF5F5F5);
+
+    QRect iconRect(0, 88, width(), messageLabel->pos().y() - 88 + 15);
+    qreal ratio = (qreal)iconRect.width() / iconRect.height();
+    qreal iconRatio = (qreal)icon_pixmap_.width() / icon_pixmap_.height();
+
+    int iconWidth = iconRatio * iconRect.height();
+    iconRect.setX((width() - iconWidth) / 2.0);
+    iconRect.setWidth(iconWidth);
+
+    painter.drawPixmap(iconRect, icon_pixmap_);
+}
+
 #include "packagemanagergui.moc"
 #include "moc_packagemanagergui.cpp"
+
+QInstaller::PesUnInstallResultPage::PesUnInstallResultPage(bool bSucceed, QWidget* parent)
+    : QWidget(parent)
+    , install_succeed_(bSucceed)
+{
+    
+}
+
+QInstaller::PesUnInstallResultPage::~PesUnInstallResultPage()
+{
+}
+
+void QInstaller::PesUnInstallResultPage::initUI()
+{
+    QVBoxLayout* verticalLayout = new QVBoxLayout(this);
+    verticalLayout->setContentsMargins(0, 0, 0, 0);
+    verticalLayout->setSpacing(0);
+    verticalLayout->setObjectName(QString::fromUtf8("verticalLayout"));
+
+    QHBoxLayout* pIconLayout = new QHBoxLayout();
+    pIconLayout->setContentsMargins(0, 0, 0, 0);
+    {
+        if (!install_succeed_) {
+            QLabel* pWarningLabel = new QLabel(this);
+            pWarningLabel->setFixedSize(16, 16);
+
+            QPixmap pixmap(QLatin1String(":/license_warning.png"));
+            pWarningLabel->setPixmap(pixmap.scaled(16, 16));
+
+            pIconLayout->addSpacing(5);
+            pIconLayout->addWidget(pWarningLabel);
+            pIconLayout->addSpacing(17);
+        }
+
+        iconLabel_ = new QLabel(this);
+        iconLabel_->setObjectName(QString::fromUtf8("unInstallMessageLabel"));
+
+        pIconLayout->addStretch(20);
+        pIconLayout->addWidget(iconLabel_);
+        pIconLayout->addStretch(141);
+    }
+
+    QHBoxLayout* horizontalLayout = new QHBoxLayout();
+    horizontalLayout->setContentsMargins(0, 0, 0, 0);
+    horizontalLayout->setObjectName(QString::fromUtf8("horizontalLayout"));
+    {
+        leftButton_ = new QPushButton(this);
+        leftButton_->setObjectName(QString::fromUtf8("leftButton"));
+        leftButton_->setFixedSize(QSize(88, 34));
+
+        rightButton_ = new QPushButton(this);
+        rightButton_->setObjectName(QString::fromUtf8("rightButton"));
+        rightButton_->setFixedSize(QSize(88, 34));
+
+        horizontalLayout->addStretch(131);
+        horizontalLayout->addWidget(leftButton_);
+        horizontalLayout->addStretch(10);
+        horizontalLayout->addWidget(rightButton_);
+        horizontalLayout->addStretch(20);
+    }
+
+    verticalLayout->addStretch(22);
+    verticalLayout->addLayout(pIconLayout);
+    verticalLayout->addStretch(install_succeed_ ? 39 : 9);
+    verticalLayout->addLayout(horizontalLayout);
+    verticalLayout->addStretch(20);
+
+    if (!install_succeed_) {
+        leftButton_->setVisible(false);
+        rightButton_->setObjectName(QString::fromUtf8("rightButton"));
+    }
+}
+
+void QInstaller::PesUnInstallResultPage::setMessage(const QString& msg)
+{
+    message_text_ = msg;
+}
+
+
+QInstaller::ProcessDetectMessageBox::ProcessDetectMessageBox(QWidget* parent)
+    : RoundShadowDiag(parent)
+{
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Dialog);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setFixedSize(400 + 2 * kShadowLen, 194 + 2 * kShadowLen);
+
+    QVBoxLayout* pLayout = new QVBoxLayout(this);
+    pLayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    QHBoxLayout* pTitleLayout = new QHBoxLayout();
+    pTitleLayout->setContentsMargins(16, 18, 0, 0);
+    {
+        QLabel* pWarningLabel = new QLabel(this);
+        pWarningLabel->setFixedSize(22, 22);
+
+        QPixmap pixmap(QLatin1String(":/license_warning.png"));
+        pWarningLabel->setPixmap(pixmap.scaled(22, 22));
+
+        QLabel* pTextLabel = new QLabel(this);
+        pTextLabel->setObjectName(QLatin1String("PesLicenseMsgLabel"));
+        pTextLabel->setText(tr("Program running"));
+        pTextLabel->setAlignment(Qt::AlignLeft);
+
+        close_btn_ = new QPushButton(this);
+        QPixmap close_pixmap(QLatin1String(":/close_window_gray@2x.png"));
+        close_btn_->setIcon(close_pixmap.scaled(16, 16));
+
+        close_btn_->setObjectName(QLatin1String("windowCloseButton"));
+
+        pTitleLayout->addWidget(pWarningLabel);
+        pTitleLayout->addWidget(pTextLabel);
+        pTitleLayout->addSpacing(213);
+        pTitleLayout->addWidget(close_btn_);
+        pTitleLayout->addStretch();
+    }
+
+    QHBoxLayout* pContentLayout = new QHBoxLayout();
+    pContentLayout->setContentsMargins(16, 18, 0, 0);
+    {
+        QLabel* pTextLabel = new QLabel(this);
+        pTextLabel->setFixedSize(376, 66);
+        pTextLabel->setObjectName(QLatin1String("PesLicenseMsgLabel"));
+        pTextLabel->setWordWrap(true);
+        pTextLabel->setText(tr("When PES is running, program cannot be installed. You can close the PES window and click Retry, or just force close and continue"));
+        pTextLabel->setAlignment(Qt::AlignLeft);
+
+        pContentLayout->addWidget(pTextLabel);
+    }
+
+    QHBoxLayout* pBtnLayout = new QHBoxLayout();
+    pBtnLayout->setContentsMargins(20, 0, 0, 0);
+    {
+        force_close_btn_ = new QPushButton(this);
+        force_close_btn_->setText(tr("Force Close"));
+        force_close_btn_->setObjectName(QLatin1String("forceButton"));
+
+        retry_btn_ = new QPushButton(this);
+        retry_btn_->setText(tr("Retry"));
+        retry_btn_->setObjectName(QLatin1String("agreeButton"));
+
+        quit_btn_ = new QPushButton(this);
+        quit_btn_->setText(tr("Quit"));
+        quit_btn_->setObjectName(QLatin1String("cancelButton"));
+
+        pBtnLayout->addWidget(force_close_btn_);
+        pBtnLayout->addSpacing(112);
+        pBtnLayout->addWidget(retry_btn_);
+        pBtnLayout->addSpacing(6);
+        pBtnLayout->addWidget(quit_btn_);
+        pBtnLayout->addStretch();
+    }
+    pLayout->addLayout(pTitleLayout);
+    pLayout->addLayout(pContentLayout);
+    pLayout->addLayout(pBtnLayout);
+    pLayout->addStretch();
+
+    connect(close_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Close);
+        });
+
+    connect(force_close_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Ok);
+        });
+
+    connect(retry_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Retry);
+        });
+
+    connect(quit_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Close);
+        });
+}
+
+QInstaller::PesLicenMessageBox::PesLicenMessageBox(QWidget* parent)
+    : RoundShadowDiag(parent)
+{
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Dialog);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setFixedSize(357 + 2 * kShadowLen, 136 + 2 * kShadowLen);
+
+    QVBoxLayout* pLayout = new QVBoxLayout(this);
+    pLayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    QHBoxLayout* pTitleLayout = new QHBoxLayout();
+    pTitleLayout->setContentsMargins(16, 18, 0, 0);
+    {
+        QLabel* pWarningLabel = new QLabel(this);
+        pWarningLabel->setFixedSize(22, 22);
+
+        QPixmap pixmap(QLatin1String(":/license_warning.png"));
+        pWarningLabel->setPixmap(pixmap.scaled(22, 22));
+
+        QLabel* pTextLabel = new QLabel(this);
+        pTextLabel->setObjectName(QLatin1String("PesLicenseMsgLabel"));
+        pTextLabel->setText(tr("Please Agree"));
+        pTextLabel->setAlignment(Qt::AlignLeft);
+
+        QLabel* pUserLicenseLabel = new QLabel(this);
+        pUserLicenseLabel->setObjectName(QLatin1String("PesLicenseMsgLabel"));
+        pUserLicenseLabel->setText(tr("User License Agreement"));
+        pUserLicenseLabel->setAlignment(Qt::AlignLeft);
+        {
+            QFont fs(pUserLicenseLabel->font());
+            fs.setUnderline(true);
+            pUserLicenseLabel->setFont(fs);
+        }
+
+        QLabel* pAndLabel = new QLabel(this);
+        pAndLabel->setObjectName(QLatin1String("PesLicenseMsgLabel"));
+        pAndLabel->setText(tr("And"));
+        pAndLabel->setAlignment(Qt::AlignLeft);
+
+        QLabel* pUserPrivacyLabel = new QLabel(this);
+        pUserPrivacyLabel->setObjectName(QLatin1String("PesLicenseMsgLabel"));
+        pUserPrivacyLabel->setText(tr("User Privacy Agreement"));
+        pUserPrivacyLabel->setAlignment(Qt::AlignLeft);
+        {
+            QFont fs(pUserPrivacyLabel->font());
+            fs.setUnderline(true);
+            pUserPrivacyLabel->setFont(fs);
+        }
+
+        pTitleLayout->addWidget(pWarningLabel);
+        pTitleLayout->addWidget(pTextLabel);
+        pTitleLayout->addWidget(pUserLicenseLabel);
+        pTitleLayout->addWidget(pAndLabel);
+        pTitleLayout->addWidget(pUserPrivacyLabel);
+        pTitleLayout->addStretch();
+    }
+
+    QHBoxLayout* pBtnLayout = new QHBoxLayout();
+    pBtnLayout->setContentsMargins(198, 31, 0, 0);
+    {
+        cancel_btn_ = new QPushButton(this);
+        cancel_btn_->setText(tr("Cancel"));
+        cancel_btn_->setObjectName(QLatin1String("cancelButton"));
+
+        agree_btn_ = new QPushButton(this);
+        agree_btn_->setText(tr("Agree"));
+        agree_btn_->setObjectName(QLatin1String("agreeButton"));
+
+        pBtnLayout->addWidget(cancel_btn_);
+        pBtnLayout->addSpacing(2);
+        pBtnLayout->addWidget(agree_btn_);
+        pBtnLayout->addStretch();
+    }
+
+    pLayout->addLayout(pTitleLayout);
+    pLayout->addLayout(pBtnLayout);
+    pLayout->addStretch();
+
+    connect(cancel_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Cancel);
+        });
+
+    connect(agree_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Ok);
+        });
+}
+
+QInstaller::PesLicenMessageBox::~PesLicenMessageBox()
+{
+
+}
+
+QInstaller::PesEnvDetectMessageBox::PesEnvDetectMessageBox(QWidget* parent, QString msg)
+    : RoundShadowDiag(parent)
+    , minimize_btn_(nullptr)
+    , close_btn_(nullptr)
+    , cancel_btn_(nullptr)
+    , detect_btn_(nullptr)
+    , message_(msg)
+{
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Dialog);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setFixedSize(800 + 2 * kShadowLen, 560 + 2 * kShadowLen);
+
+    QVBoxLayout* pMainLayout = new QVBoxLayout(this);
+    pMainLayout->setContentsMargins(kShadowLen, kShadowLen, kShadowLen, kShadowLen);
+
+    QHBoxLayout* pTitleLayout = new QHBoxLayout();
+    pTitleLayout->setContentsMargins(720, 8, 8, 0);
+    {
+        minimize_btn_ = new QPushButton(this);
+        close_btn_ = new QPushButton(this);
+
+        minimize_btn_->installEventFilter(this);
+        close_btn_->installEventFilter(this);
+
+        QPixmap minimize_pixmap(QLatin1String(":/min_window_gray@2x.png"));
+        QPixmap close_pixmap(QLatin1String(":/close_window_gray@2x.png"));
+
+        minimize_btn_->setIcon(minimize_pixmap.scaled(16, 16));
+        close_btn_->setIcon(close_pixmap.scaled(16, 16));
+
+        minimize_btn_->setObjectName(QLatin1String("windowMinimizeButton"));
+        close_btn_->setObjectName(QLatin1String("windowCloseButton"));
+
+        pTitleLayout->addWidget(minimize_btn_);
+        pTitleLayout->addSpacing(30);
+        pTitleLayout->addWidget(close_btn_);
+        pTitleLayout->addStretch();
+    }
+
+    QHBoxLayout* pIconLayout = new QHBoxLayout();
+    pIconLayout->setContentsMargins(237, 67, 0, 0);
+    {
+        QLabel* pIconLabel = new QLabel(this);
+
+        QPixmap pixmap(QLatin1String(":/gpu_undetected.png"));
+        pIconLabel->setPixmap(pixmap.scaled(314, 277));
+
+        pIconLayout->addWidget(pIconLabel);
+        pIconLayout->addStretch();
+    }
+
+    QHBoxLayout* pMessageLayout = new QHBoxLayout();
+    pMessageLayout->setContentsMargins(0, 0, 0, 0);
+    {
+        QLabel* pMessageLabel = new QLabel(this);
+        pMessageLabel->setObjectName(QLatin1String("GpuNotExistMessageLabel"));
+        pMessageLabel->setText(message_);
+        pMessageLabel->setAlignment(Qt::AlignVCenter | Qt::AlignHCenter);
+
+        pMessageLayout->addWidget(pMessageLabel, Qt::AlignHCenter);
+        pMessageLayout->addStretch();
+    }
+
+    QHBoxLayout* pBtnLayout = new QHBoxLayout();
+    pBtnLayout->setContentsMargins(281, 18, 0, 0);
+    {
+        cancel_btn_ = new QPushButton(this);
+        cancel_btn_->setText(tr("Cancel Install"));
+        cancel_btn_->setObjectName(QLatin1String("cancelInstallButton"));
+		cancel_btn_->setFixedSize(109, 46);
+
+        detect_btn_ = new QPushButton(this);
+        detect_btn_->setText(tr("Detect"));
+        detect_btn_->setObjectName(QLatin1String("detectButton"));
+		detect_btn_->setFixedSize(109, 46);
+
+        pBtnLayout->addWidget(cancel_btn_);
+        pBtnLayout->addSpacing(10);
+        pBtnLayout->addWidget(detect_btn_);
+        pBtnLayout->addStretch();
+    }
+
+    pMainLayout->addLayout(pTitleLayout);
+    pMainLayout->addLayout(pIconLayout);
+    pMainLayout->addLayout(pMessageLayout);
+    pMainLayout->addLayout(pBtnLayout);
+    pMainLayout->addStretch();
+
+    connect(cancel_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Cancel);
+        });
+
+    connect(detect_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Ok);
+        });
+
+    connect(close_btn_, &QPushButton::clicked, this, [&] {
+        done(QMessageBox::Close);
+        });
+
+    connect(minimize_btn_, &QPushButton::clicked, this, [&] {
+        showMinimized();
+        });
+}
+
+QInstaller::PesEnvDetectMessageBox::~PesEnvDetectMessageBox()
+{
+    minimize_btn_->removeEventFilter(this);
+    close_btn_->removeEventFilter(this);
+}
+
+bool QInstaller::PesEnvDetectMessageBox::eventFilter(QObject* obj, QEvent* ev)
+{
+    if (obj == minimize_btn_) {
+        if (ev->type() == QEvent::Enter) {
+            QPixmap minimize_pixmap(QLatin1String(":/min_window@2x.png"));
+            minimize_btn_->setIcon(minimize_pixmap.scaled(16, 16));
+        }
+        else if (ev->type() == QEvent::Leave) {
+            QPixmap minimize_pixmap(QLatin1String(":/min_window_gray@2x.png"));
+            minimize_btn_->setIcon(minimize_pixmap.scaled(16, 16));
+        }
+    }
+    else if (obj == close_btn_) {
+        if (ev->type() == QEvent::Enter) {
+            QPixmap close_pixmap(QLatin1String(":/close_window@2x.png"));
+            close_btn_->setIcon(close_pixmap.scaled(16, 16));
+        }
+        else if (ev->type() == QEvent::Leave) {
+            QPixmap close_pixmap(QLatin1String(":/close_window_gray@2x.png"));
+            close_btn_->setIcon(close_pixmap.scaled(16, 16));
+        }
+    }
+    return false;
+}
+
+void QInstaller::RoundShadowDiag::paintEvent(QPaintEvent* event)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(QBrush(Qt::white));
+    painter.setPen(Qt::transparent);
+
+    int radius = 8;
+
+    QColor color(102, 102, 102, 200);
+    for (int i = 0; i < kShadowLen; i++)
+    {
+        int nAlpha = 120 - sqrt(i) * 50;
+        if (nAlpha < 0)
+            break;
+        color.setAlpha(nAlpha);
+        painter.setPen(color);
+        painter.setBrush(QBrush(Qt::transparent));
+        painter.drawRoundedRect(
+            kShadowLen - i, kShadowLen - i,
+            width() - (kShadowLen - i) * 2,
+            height() - (kShadowLen - i) * 2,
+            radius, radius);
+    }
+
+    painter.setBrush(QBrush(Qt::white));
+    QRect drawRect(kShadowLen, kShadowLen, width() - 2 * kShadowLen, height() - 2 * kShadowLen);
+    painter.drawRoundedRect(drawRect, radius, radius);
+}
+
+QInstaller::PesToolTip::PesToolTip(QWidget* parent)
+    : QWidget(parent)
+{
+    setWindowFlags(Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground);
+
+    setFixedSize(440, 48);
+
+    QHBoxLayout* pLayout = new QHBoxLayout(this);
+    pLayout->setContentsMargins(140, 12, 0, 12);
+    {
+        QLabel* pWarningLabel = new QLabel(this);
+
+        QPixmap pixmap(QLatin1String(":/license_warning.png"));
+        pWarningLabel->setPixmap(pixmap.scaled(18, 18));
+
+        text_label_ = new QLabel(this);
+        text_label_->setObjectName(QLatin1String("warningToolTipLabel"));
+        text_label_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+        pLayout->addWidget(pWarningLabel);
+        pLayout->addSpacing(14);
+        pLayout->addWidget(text_label_);
+        pLayout->addStretch();
+    }
+
+    timer_ = new QTimer(this);
+    bool b = connect(timer_, SIGNAL(timeout()), this, SLOT(onTimeOut()));
+}
+
+void QInstaller::PesToolTip::start()
+{
+    if (timer_) {
+        timer_->stop();
+
+        timer_->start(3000);
+    }
+
+    show();
+}
+
+void QInstaller::PesToolTip::stop()
+{
+    if (timer_) {
+        timer_->stop();
+    }
+
+    hide();
+}
+
+void QInstaller::PesToolTip::setMessage(const QString& msg)
+{
+    if (text_label_) {
+        text_label_->setText(msg);
+    }
+}
+
+void QInstaller::PesToolTip::paintEvent(QPaintEvent* event)
+{
+    QPainter p(this);
+    p.fillRect(rect(), 0xFFECE5);
+}
+
+void QInstaller::PesToolTip::onTimeOut()
+{
+    if (timer_) {
+        timer_->stop();
+    }
+    hide();
+}

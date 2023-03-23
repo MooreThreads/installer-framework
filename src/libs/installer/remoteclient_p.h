@@ -87,10 +87,7 @@ public:
             m_startServerAs = startAs;
             m_serverCommand = QCoreApplication::applicationFilePath();
             m_serverArguments = QStringList() << QLatin1String("--") + CommandLineOptions::scStartServerLong
-                << QString::fromLatin1("%1,%2,%3")
-                    .arg(QLatin1String(Protocol::ModeProduction))
-                    .arg(socketName)
-                    .arg(key);
+                                              << QString::fromLatin1("%1,%2,%3").arg(QLatin1String(Protocol::ModeProduction), socketName, key);
 
             KeepAliveObject *object = new KeepAliveObject;
             object->moveToThread(&m_thread);
@@ -142,6 +139,7 @@ public:
                 } else {
                     // something went wrong with authorizing, either user pressed cancel or entered
                     // wrong password
+#if 0 // do not show message box
                     const QString fallback = m_serverCommand + QLatin1String(" ") + m_serverArguments
                         .join(QLatin1String(" "));
 
@@ -156,6 +154,7 @@ public:
                         QMessageBox::Abort | QMessageBox::Ok, QMessageBox::Ok);
 
                     if (res == QMessageBox::Ok)
+#endif
                         started = true;
                 }
             }
@@ -168,7 +167,7 @@ public:
             QElapsedTimer t;
             t.start();
             // 30 seconds waiting ought to be enough for the app to start
-            while ((!m_serverStarted) && (t.elapsed() < 30000))
+            while ((!m_serverStarted) && (t.elapsed() < 1000))
                 m_serverStarted = authorize();
         }
     }

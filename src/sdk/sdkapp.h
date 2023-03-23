@@ -336,6 +336,9 @@ public:
         if (m_parser.isSet(CommandLineOptions::scNoSizeCheckingLong))
             m_core->setCheckAvailableSpace(false);
 
+        if (m_parser.isSet(CommandLineOptions::scNoEnvChecking))
+            m_core->setCheckEnv(false);
+
         QInstaller::PackageManagerCore::setNoForceInstallation(m_parser
             .isSet(CommandLineOptions::scNoForceInstallationLong));
         QInstaller::PackageManagerCore::setNoDefaultInstallation(m_parser
@@ -502,6 +505,9 @@ public:
                 params.insert(name, value);
             }
         }
+
+        // default install for all user
+        params.insert(QInstaller::scAllUsers, QInstaller::scTrue);
         return params;
     }
 

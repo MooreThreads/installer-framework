@@ -103,8 +103,9 @@ public:
         qCDebug(QInstaller::lcInstallerInstallLog).noquote() << QString::fromLatin1("%1 %2 operation: %3")
             .arg(state, m_operation->value(QLatin1String("component")).toString(), m_operation->name());
         QStringList args = m_operation->arguments();
-        if (m_operation->requiresUnreplacedVariables())
+        if (m_operation->requiresUnreplacedVariables()) {
             args = m_operation->packageManager()->replaceVariables(m_operation->arguments());
+        }
         qCDebug(QInstaller::lcInstallerInstallLog).noquote() << QString::fromLatin1("\t- arguments: %1")
             .arg(args.join(QLatin1String(", ")));
     }
@@ -213,6 +214,7 @@ PackageManagerCorePrivate::PackageManagerCorePrivate(PackageManagerCore *core)
     : m_updateFinder(nullptr)
     , m_localPackageHub(std::make_shared<LocalPackageHub>())
     , m_status(PackageManagerCore::Unfinished)
+    , m_checkEnv(true)
     , m_needsHardRestart(false)
     , m_testChecksum(false)
     , m_launchedAsRoot(AdminAuthorization::hasAdminRights())
@@ -251,12 +253,20 @@ PackageManagerCorePrivate::PackageManagerCorePrivate(PackageManagerCore *core, q
     : m_updateFinder(nullptr)
     , m_localPackageHub(std::make_shared<LocalPackageHub>())
     , m_status(PackageManagerCore::Unfinished)
+    , m_checkEnv(true)
     , m_needsHardRestart(false)
     , m_testChecksum(false)
     , m_launchedAsRoot(AdminAuthorization::hasAdminRights())
+    , m_commandLineInstance(false)
+    , m_defaultInstall(false)
+    , m_userSetBinaryMarker(false)
+    , m_checkAvailableSpace(true)
     , m_completeUninstall(false)
     , m_needToWriteMaintenanceTool(false)
     , m_dependsOnLocalInstallerBinary(false)
+    , m_autoAcceptLicenses(false)
+    , m_disableWriteMaintenanceTool(false)
+    , m_autoConfirmCommand(false)
     , m_core(core)
     , m_updates(false)
     , m_repoFetched(false)
@@ -264,6 +274,7 @@ PackageManagerCorePrivate::PackageManagerCorePrivate(PackageManagerCore *core, q
     , m_magicBinaryMarker(magicInstallerMaker)
     , m_magicMarkerSupplement(BinaryContent::Default)
     , m_componentsToInstallCalculated(false)
+    , m_foundEssentialUpdate(false)
     , m_componentScriptEngine(nullptr)
     , m_controlScriptEngine(nullptr)
     , m_installerCalculator(nullptr)
@@ -273,14 +284,6 @@ PackageManagerCorePrivate::PackageManagerCorePrivate(PackageManagerCore *core, q
     , m_updaterModel(nullptr)
     , m_guiObject(nullptr)
     , m_remoteFileEngineHandler(new RemoteFileEngineHandler)
-    , m_foundEssentialUpdate(false)
-    , m_commandLineInstance(false)
-    , m_defaultInstall(false)
-    , m_userSetBinaryMarker(false)
-    , m_checkAvailableSpace(true)
-    , m_autoAcceptLicenses(false)
-    , m_disableWriteMaintenanceTool(false)
-    , m_autoConfirmCommand(false)
 {
     foreach (const OperationBlob &operation, performedOperations) {
         QScopedPointer<QInstaller::Operation> op(KDUpdater::UpdateOperationFactory::instance()
@@ -1733,8 +1736,6 @@ bool PackageManagerCorePrivate::runInstaller()
                     m_data.settings().setDefaultRepositories(repos);
                     addPerformed(takeOwnedOperation(createRepo));
                 } else {
-                    MessageBoxHandler::critical(MessageBoxHandler::currentBestSuitParent(),
-                        QLatin1String("installationError"), tr("Error"), createRepo->errorString());
                     createRepo->undoOperation();
                 }
             }
@@ -1759,9 +1760,7 @@ bool PackageManagerCorePrivate::runInstaller()
         emit installationFinished();
     } catch (const Error &err) {
         if (m_core->status() != PackageManagerCore::Canceled) {
-            setStatus(PackageManagerCore::Failure);
-            MessageBoxHandler::critical(MessageBoxHandler::currentBestSuitParent(),
-                QLatin1String("installationError"), tr("Error"), err.message());
+            setStatus(PackageManagerCore::Failure, err.message());
             qCDebug(QInstaller::lcInstallerInstallLog) << "ROLLING BACK operations="
                 << m_performedOperationsCurrentSession.count();
         }
@@ -1938,9 +1937,7 @@ bool PackageManagerCorePrivate::runPackageUpdater()
         emit installationFinished();
     } catch (const Error &err) {
         if (m_core->status() != PackageManagerCore::Canceled) {
-            setStatus(PackageManagerCore::Failure);
-            MessageBoxHandler::critical(MessageBoxHandler::currentBestSuitParent(),
-                QLatin1String("installationError"), tr("Error"), err.message());
+            setStatus(PackageManagerCore::Failure, err.message());
             qCDebug(QInstaller::lcInstallerInstallLog) << "ROLLING BACK operations="
                 << m_performedOperationsCurrentSession.count();
         }
@@ -2009,9 +2006,7 @@ bool PackageManagerCorePrivate::runUninstaller()
         setStatus(PackageManagerCore::Success);
     } catch (const Error &err) {
         if (m_core->status() != PackageManagerCore::Canceled) {
-            setStatus(PackageManagerCore::Failure);
-            MessageBoxHandler::critical(MessageBoxHandler::currentBestSuitParent(),
-                QLatin1String("installationError"), tr("Error"), err.message());
+            setStatus(PackageManagerCore::Failure, err.message());
         }
     }
 
@@ -2130,7 +2125,7 @@ bool PackageManagerCorePrivate::runOfflineGenerator()
 
     } catch (const Error &err) {
         if (m_core->status() != PackageManagerCore::Canceled) {
-            setStatus(PackageManagerCore::Failure);
+            setStatus(PackageManagerCore::Failure, err.message());
             MessageBoxHandler::critical(MessageBoxHandler::currentBestSuitParent(),
                 QLatin1String("installationError"), tr("Error"), err.message());
         }
@@ -2197,19 +2192,9 @@ void PackageManagerCorePrivate::installComponent(Component *component, double pr
             qCDebug(QInstaller::lcInstallerInstallLog) << QString::fromLatin1("Operation \"%1\" with arguments "
                 "\"%2\" failed: %3").arg(operation->name(), operation->arguments()
                 .join(QLatin1String("; ")), operation->errorString());
-            const QMessageBox::StandardButton button =
-                MessageBoxHandler::warning(MessageBoxHandler::currentBestSuitParent(),
-                QLatin1String("installationErrorWithCancel"), tr("Installer Error"),
-                tr("Error during installation process (%1):\n%2").arg(component->name(),
-                operation->errorString()),
-                QMessageBox::Retry | QMessageBox::Ignore | QMessageBox::Cancel, QMessageBox::Cancel);
-
-            if (button == QMessageBox::Retry)
-                ok = performOperationThreaded(operation);
-            else if (button == QMessageBox::Ignore)
-                ignoreError = true;
-            else if (button == QMessageBox::Cancel)
-                m_core->interrupt();
+            
+            m_core->interrupt();
+            break;
         }
 
         if (ok || operation->error() > Operation::InvalidArguments) {
@@ -2311,7 +2296,7 @@ void PackageManagerCorePrivate::deleteMaintenanceTool()
     const QString batchfile = QDir::toNativeSeparators(QFileInfo(QDir::tempPath(),
         QLatin1String("uninstall.vbs")).absoluteFilePath());
     QFile f(batchfile);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text))
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate))
         throw Error(tr("Cannot prepare removal"));
 
     QTextStream batch(&f);
@@ -2327,7 +2312,7 @@ void PackageManagerCorePrivate::deleteMaintenanceTool()
     batch << "wend\n";
 //    batch << "if folder.SubFolders.Count = 0 and folder.Files.Count = 0 then\n";
     batch << "    Set folder = Nothing\n";
-    batch << "    fso.DeleteFolder folderpath, true\n";
+    batch << "    fso.DeleteFolder(folderpath),true\n";
 //    batch << "end if\n";
     batch << "fso.DeleteFile(WScript.ScriptFullName)\n";
 
@@ -2377,7 +2362,10 @@ void PackageManagerCorePrivate::registerMaintenanceTool()
     settings.setValue(QLatin1String("Comments"), m_data.value(scTitle));
     settings.setValue(QLatin1String("InstallDate"), QDateTime::currentDateTime().toString());
     settings.setValue(QLatin1String("InstallLocation"), QDir::toNativeSeparators(targetDir()));
-    settings.setValue(QLatin1String("UninstallString"), maintenanceTool);
+
+    const QString maintenanceToolStr = QLatin1String("\"") + maintenanceTool + QLatin1String("\"");
+    settings.setValue(QLatin1String("UninstallString"), maintenanceToolStr);
+
     settings.setValue(QLatin1String("ModifyPath"), QString(maintenanceTool
         + QLatin1String(" --manage-packages")));
     // required disk space of the installed components
