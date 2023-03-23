@@ -7,5 +7,25 @@
         <file>uninstall.png</file>
         <file>keepinstalled.png</file>
         <file>keepuninstalled.png</file>
+        <file>install_yes.png</file>
+        <file>close_window@2x.png</file>
+        <file>close_window_gray@2x.png</file>
+        <file>min_window@2x.png</file>
+        <file>min_window_gray@2x.png</file>
+        <file>checkbox_on.png</file>
+        <file>checkbox_off.png</file>
+        <file>uninstall@2x.png</file>
+        <file>failed.png</file>
+        <file>install_interface.png</file>
+        <file>install_face.png</file>
+        <file>worningIcon.png</file>
+        <file>description.png</file>
+        <file>PES.png</file>
+        <file>space.png</file>
+        <file>license_warning.png</file>
+        <file>gpu_undetected.png</file>
+        <file>resizebar/didriver64.sys</file>
+        <file>resizebar/pciutil64.dll</file>
+        <file>resizebar/resizebar_detect.exe</file>
     </qresource>
 </RCC>

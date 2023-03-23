@@ -30,14 +30,22 @@
 #define PACKAGEMANAGERGUI_H
 
 #include "packagemanagercore.h"
+#include "custom_messgebox.h"
 
 #include <QtCore/QEvent>
 #include <QtCore/QMetaType>
 #include <QtCore/QTimer>
-
+#include <QPushButton>
+#include <QLabel>
+#include <QHBoxLayout>
+#include <QSpacerItem>
+#include <QIcon>
+#include <QString>
+#include <QDebug>
+#include <QMessageBox>
 #include <QWizard>
 #include <QWizardPage>
-
+#include <QProxyStyle>
 // FIXME: move to private classes
 QT_BEGIN_NAMESPACE
 class QAbstractButton;
@@ -50,6 +58,8 @@ class QProgressBar;
 class QRadioButton;
 class QTextBrowser;
 class QWinTaskbarButton;
+class QTextEdit;
+class QScrollArea;
 QT_END_NAMESPACE
 
 namespace QInstaller {
@@ -60,11 +70,9 @@ class PerformInstallationForm;
 class ComponentSelectionPagePrivate;
 
 // -- PackageManagerGui
-
 class INSTALLER_EXPORT PackageManagerGui : public QWizard
 {
     Q_OBJECT
-
 public:
     explicit PackageManagerGui(PackageManagerCore *core, QWidget *parent = 0);
     virtual ~PackageManagerGui() = 0;
@@ -89,10 +97,13 @@ public:
     void updateButtonLayout();
     static QWizard::WizardStyle getStyle(const QString &name);
 
-    void setSilent(bool silent);
+    void setSilent(bool silent, bool bSilentInstall = true);
     bool isSilent() const;
 
     void setTextItems(QObject *object, const QStringList &items);
+
+protected:
+    bool nativeEvent(const QByteArray& eventType, void* message, long* result) override;
 
 Q_SIGNALS:
     void interrupted();
@@ -129,16 +140,25 @@ private Q_SLOTS:
     void currentPageChanged(int newId);
 
 protected:
-    bool event(QEvent *event);
-    void showEvent(QShowEvent *event);
+    bool event(QEvent *event) override;
+    void showEvent(QShowEvent*) override;
+    void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     PackageManagerCore *packageManagerCore() const { return m_core; }
     void executeControlScript(int pageId);
 
 private:
+    qreal origin_dpi_;
+    QSize origin_size_;
+    QSize current_size_;
+    qreal current_dpi_;
+    QSize size_adjust_;
     class Private;
     Private *const d;
     PackageManagerCore *m_core;
     QListWidget *m_pageListWidget;
+    QLabel* space_label_;
+    QHash<QString, QString> m_messages;
 };
 
 
@@ -167,7 +187,7 @@ public:
     virtual bool isComplete() const;
     void setComplete(bool complete);
 
-    virtual bool isInterruptible() const { return false; }
+    virtual bool isInterruptible() const { return true; }
     PackageManagerGui* gui() const { return qobject_cast<PackageManagerGui*>(wizard()); }
 
     void setValidatePageComponent(QInstaller::Component *component);
@@ -177,6 +197,9 @@ public:
     bool settingsButtonRequested() const { return m_needsSettingsButton; }
     void setSettingsButtonRequested(bool request) { m_needsSettingsButton = request; }
     void removeCustomWidget(const QWidget *widget);
+
+    void setSilent(bool bSilent);
+    bool isSilent() const;
 
 signals:
     void entered();
@@ -205,6 +228,7 @@ private:
     QString m_pageListTitle;
     bool m_showOnPageList;
     bool m_needsSettingsButton;
+    bool m_bSilent;
 
     PackageManagerCore *m_core;
     QInstaller::Component *validatorComponent;
@@ -275,37 +299,6 @@ private:
 #endif
 };
 
-
-// -- LicenseAgreementPage
-
-class INSTALLER_EXPORT LicenseAgreementPage : public PackageManagerPage
-{
-    Q_OBJECT
-    class ClickForwarder;
-
-public:
-    explicit LicenseAgreementPage(PackageManagerCore *core);
-
-    void entering();
-    bool isComplete() const;
-
-private Q_SLOTS:
-    void openLicenseUrl(const QUrl &url);
-    void currentItemChanged(QListWidgetItem *current);
-
-private:
-    void createLicenseWidgets();
-    void updateUi();
-
-private:
-    QTextBrowser *m_textBrowser;
-    QListWidget *m_licenseListWidget;
-
-    QCheckBox *m_acceptCheckBox;
-    QLabel *m_acceptLabel;
-};
-
-
 // -- ComponentSelectionPage
 
 class INSTALLER_EXPORT ComponentSelectionPage : public PackageManagerPage
@@ -339,101 +332,21 @@ private:
     ComponentSelectionPagePrivate *const d;
 };
 
-
-// -- TargetDirectoryPage
-
-class INSTALLER_EXPORT TargetDirectoryPage : public PackageManagerPage
-{
-    Q_OBJECT
-
-public:
-    explicit TargetDirectoryPage(PackageManagerCore *core);
-    QString targetDir() const;
-    void setTargetDir(const QString &dirName);
-
-    void initializePage();
-    bool validatePage();
-    bool isComplete() const;
-
-protected:
-    void entering();
-    void leaving();
-
-private Q_SLOTS:
-    void dirRequested();
-
-private:
-    QString targetDirWarning() const;
-
-private:
-    QLineEdit *m_lineEdit;
-    QLabel *m_warningLabel;
-    QTimer m_textChangeTimer;
-};
-
-
-// -- StartMenuDirectoryPage
-
-class INSTALLER_EXPORT StartMenuDirectoryPage : public PackageManagerPage
-{
-    Q_OBJECT
-
-public:
-    explicit StartMenuDirectoryPage(PackageManagerCore *core);
-
-    QString startMenuDir() const;
-    void setStartMenuDir(const QString &startMenuDir);
-
-protected:
-    void leaving();
-
-private Q_SLOTS:
-    void currentItemChanged(QListWidgetItem* current);
-
-private:
-    QString startMenuPath;
-    QLineEdit *m_lineEdit;
-    QListWidget *m_listWidget;
-};
-
-
-// -- ReadyForInstallationPage
-
-class INSTALLER_EXPORT ReadyForInstallationPage : public PackageManagerPage
-{
-    Q_OBJECT
-
-public:
-    explicit ReadyForInstallationPage(PackageManagerCore *core);
-
-protected:
-    void entering();
-    void leaving();
-
-private Q_SLOTS:
-    void updatePageListTitle();
-
-private:
-    QLabel *m_msgLabel;
-    QTextBrowser* m_taskDetailsBrowser;
-};
-
-
 // -- PerformInstallationPage
 
 class INSTALLER_EXPORT PerformInstallationPage : public PackageManagerPage
 {
     Q_OBJECT
-
 public:
     explicit PerformInstallationPage(PackageManagerCore *core);
     ~PerformInstallationPage();
     bool isAutoSwitching() const;
 
 protected:
+    virtual int nextId() const;
     void entering();
     void leaving();
-    bool isInterruptible() const { return true; }
+    bool isInterruptible() const { return false; }
 
 public Q_SLOTS:
     void setTitleMessage(const QString& title);
@@ -500,6 +413,271 @@ protected:
 
 Q_SIGNALS:
     void restart();
+};
+
+
+struct PesLicenceInfo
+{
+    enum LicenseType
+    {
+        UserService,
+        UserPrivacy
+    };
+    PesLicenceInfo()
+    : is_licence_agreed(false)
+    , licence_type(UserService)
+    {}
+    
+    bool is_licence_agreed;
+    LicenseType licence_type;
+};
+
+class PesToolTip;
+class INSTALLER_EXPORT PesHomePage : public PackageManagerPage
+{
+    Q_OBJECT
+public:
+    explicit PesHomePage(PackageManagerCore *core, PesLicenceInfo* info);
+    
+    void setLicenceAgreed(bool agree);
+    
+    virtual void initializePage();
+    virtual int nextId() const;
+    
+protected:
+    void entering() override;
+
+private:
+    void connectAll();
+    void startInstall();
+    void showUserService();
+    void showUserPrivacy();
+    void chooseDirectory();
+    bool setSpaceMessage(quint64 need_space, quint64 available_space);
+    void updateButtonBackground(bool agree);
+
+    bool checkDirWritable(const QString& dirPath);
+    bool checkCanInstall(const QString& dirPath);
+
+    bool m_all_packages_fetched;
+    QWidget* background_widget_;
+    QLabel* welcom_label_;
+    QLabel* introduce_label_;
+    QLabel* dir_choose_label_;
+    QPushButton* install_button_;
+    QLineEdit* dir_text_;
+    QPushButton* dir_choose_button_;
+    QLabel* space_label_;
+    QPushButton* warning_button_;
+    QCheckBox* licence_check_box_;
+    QPushButton* user_service_btn_;
+    QPushButton* user_privacy_btn_;
+    bool force_to_licence_page_;
+    PesLicenceInfo* licence_info_;
+    PesToolTip* tool_tip_;
+    quint64 need_space_;
+
+    QString target_dir_;
+};
+
+class INSTALLER_EXPORT PesLicencePage : public PackageManagerPage
+{
+    Q_OBJECT
+public:
+    explicit PesLicencePage(PackageManagerCore *core, PesLicenceInfo* info);
+    void entering() override;
+
+private:
+    void backeButtonClicked();
+
+private:
+    QTextEdit* text_edit_;
+    QPushButton* back_button_;
+    PesLicenceInfo* licence_info_;
+};
+
+class INSTALLER_EXPORT PesUninstallHomePage : public PackageManagerPage
+{
+    Q_OBJECT
+public:
+    explicit PesUninstallHomePage(PackageManagerCore* core);
+    bool isInterruptible() const override { return false; }
+
+private:
+    void startUninstall();
+    void cancelUninstall();
+
+protected slots:
+    void onClearAccountToggle(bool);
+
+private:
+    bool clear_account_info_;
+    QPushButton* cancel_btn_;
+    QPushButton* uninstall_btn_;
+};
+
+//install result page
+class PesResultPage : public QWidget
+{
+public:
+    PesResultPage(QWidget* parent);
+    ~PesResultPage();
+
+    void initUI();
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+public:
+    QPixmap icon_pixmap_;
+
+    QLabel* spacelabel = nullptr;
+   
+    QPushButton* leftButton = nullptr;
+    QPushButton* rightButton = nullptr;
+
+    QString message_text_;
+    QString detail_text_;
+
+    QLabel* messageLabel = nullptr;
+    QLabel* detailLabel = nullptr;
+};
+
+//uninstall result page
+class PesUnInstallResultPage : public QWidget
+{
+    Q_OBJECT
+public:
+    PesUnInstallResultPage(bool bSucceed, QWidget* parent);
+    ~PesUnInstallResultPage();
+
+    void initUI();
+
+    void setMessage(const QString& msg);
+
+public:
+    QLabel* iconLabel_ = nullptr;
+
+    QPushButton* rightButton_ = nullptr;
+    QPushButton* leftButton_ = nullptr;
+
+    QString message_text_;
+    bool install_succeed_ = true;
+};
+
+class INSTALLER_EXPORT PesFinishPage : public PackageManagerPage
+{
+    Q_OBJECT
+public:
+    explicit PesFinishPage(PackageManagerCore *core);
+private:
+    void handleFinish();
+    void handleReboot();
+    void handleStartNow();
+
+private:
+    void initInstallFinishedPage();
+    void initUninstallFinishedPage();
+private:
+    PesResultPage* result_page_;
+    PesUnInstallResultPage* uninstall_result_page_;
+};
+
+class INSTALLER_EXPORT PesErrorPage : public PackageManagerPage
+{
+    Q_OBJECT
+public:
+    explicit PesErrorPage(PackageManagerCore *core);
+protected:
+    void entering() override;
+    void paintEvent(QPaintEvent* event) override;
+private:
+    void handleFinish();
+
+    void initInstallErrorPage();
+    void initUninstallErrorPage();
+
+private:
+    PesResultPage* result_page_;
+    PesUnInstallResultPage* uninstall_result_page_;
+};
+
+//message box
+class RoundShadowDiag : public QDialog
+{
+    Q_OBJECT
+public:
+    explicit RoundShadowDiag(QWidget* parent) : QDialog(parent) {}
+protected:
+    void paintEvent(QPaintEvent* event) override;
+};
+
+class ProcessDetectMessageBox : public RoundShadowDiag
+{
+    Q_OBJECT
+public:
+    explicit ProcessDetectMessageBox(QWidget* parent);
+    ~ProcessDetectMessageBox() {}
+
+private:
+    QPushButton* force_close_btn_;
+    QPushButton* retry_btn_;
+    QPushButton* close_btn_;
+    QPushButton* quit_btn_;
+};
+
+class PesLicenMessageBox : public RoundShadowDiag
+{
+    Q_OBJECT
+public:
+    explicit PesLicenMessageBox(QWidget* parent);
+    ~PesLicenMessageBox();
+
+private:
+    QPushButton* cancel_btn_;
+    QPushButton* agree_btn_;
+};
+
+//Env not support dialog
+class PesEnvDetectMessageBox : public RoundShadowDiag
+{
+    Q_OBJECT
+public:
+    explicit PesEnvDetectMessageBox(QWidget* parent, QString msg);
+    ~PesEnvDetectMessageBox();
+
+protected:
+    bool eventFilter(QObject*, QEvent*) override;
+
+private:
+    QPushButton* minimize_btn_;
+    QPushButton* close_btn_;
+
+    QPushButton* cancel_btn_;
+    QPushButton* detect_btn_;
+    QString message_;
+};
+
+class PesToolTip : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit PesToolTip(QWidget* parent);
+    ~PesToolTip() {}
+
+    void start();
+    void stop();
+
+    void setMessage(const QString& msg);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+protected slots:
+    void onTimeOut();
+private:
+    QTimer* timer_;
+    QLabel* text_label_;
 };
 
 } //namespace QInstaller

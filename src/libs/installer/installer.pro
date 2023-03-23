@@ -142,7 +142,8 @@ HEADERS += packagemanagercore.h \
     abstractarchive.h \
     directoryguard.h \
     lib7zarchive.h \
-    archivefactory.h
+    archivefactory.h \
+    custom_messgebox.h
 
 SOURCES += packagemanagercore.cpp \
     abstractarchive.cpp \
@@ -225,9 +226,11 @@ SOURCES += packagemanagercore.cpp \
     packagesource.cpp \
     repositorycategory.cpp \
     componentselectionpage_p.cpp \
-    commandlineparser.cpp
+    commandlineparser.cpp \
+    custom_messgebox.cpp
 
 FORMS += proxycredentialsdialog.ui \
+    iconbutton2.ui \
     serverauthenticationdialog.ui
 
 RESOURCES += resources/installer.qrc
@@ -249,6 +252,11 @@ CONFIG(libarchive) {
     LIBS += -llibarchive
 }
 
+contains(DEFINES, FIND_MT_GPU) {
+    LIBS += -lmtgf
+    win32: LIBS += -lcfgmgr32 -lOneCoreUAP
+}
+
 LIBS += -l7z
 win32 {
     SOURCES += adminauthorization_win.cpp sysinfo_win.cpp
@@ -263,3 +271,4 @@ win32 {
 
 target.path = $$[QT_INSTALL_LIBS]
 INSTALLS += target
+TRANSLATIONS = installerfw.ts

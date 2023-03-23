@@ -113,6 +113,14 @@ static const QLatin1String scBanner("Banner");
 static const QLatin1String scLogo("Logo");
 static const QLatin1String scBackground("Background");
 static const QLatin1String scPageListPixmap("PageListPixmap");
+static const QLatin1String scMessageFile("MessageFile");
+static const QLatin1String scNeedRestart("NeedRestart");
+static const QLatin1String scMessages("Messages");
+static const QLatin1String scInstallFinish("InstallFinish");
+static const QLatin1String scInstallError("InstallError");
+static const QLatin1String scUninstallFinish("UninstallFinish");
+static const QLatin1String scUninstallError("UninstallError");
+
 const char scRelocatable[] = "@RELOCATABLE_PATH@";
 }
 
@@ -147,6 +155,8 @@ static const QLatin1String scCreateOfflineShort("co");
 static const QLatin1String scCreateOfflineLong("create-offline");
 static const QLatin1String scPurgeShort("pr");
 static const QLatin1String scPurgeLong("purge");
+static const QLatin1String scSilentUpdateShort("siu");
+static const QLatin1String scSilentUpdateLong("silent_update");
 
 // Repository management options
 static const QLatin1String scAddRepositoryShort("ar");
@@ -169,6 +179,8 @@ static const QLatin1String scStartPackageManagerShort("sm");
 static const QLatin1String scStartPackageManagerLong("start-package-manager");
 static const QLatin1String scStartUninstallerShort("sr");
 static const QLatin1String scStartUninstallerLong("start-uninstaller");
+static const QLatin1String scDevInstallShort("di");
+static const QLatin1String scDevInstallLong("dev_install");
 
 // Message acceptance options
 static const QLatin1String scAcceptMessageQueryShort("am");
@@ -216,6 +228,7 @@ static const QLatin1String scStartClientShort("sc");
 static const QLatin1String scStartClientLong("start-client");
 static const QLatin1String scSquishPortShort("q");
 static const QLatin1String scSquishPortLong("squish-port");
+static const QLatin1String scNoEnvChecking("no-env-checking");
 
 // Deprecated options, provided only for backward compatibility
 static const QLatin1String scDeprecatedUpdater("updater");
@@ -238,7 +251,11 @@ static const QStringList scCommandLineInterfaceOptions = {
     scCreateOfflineShort,
     scCreateOfflineLong,
     scPurgeShort,
-    scPurgeLong
+    scPurgeLong,
+    scSilentUpdateShort,
+    scSilentUpdateLong,
+    scDevInstallShort,
+    scDevInstallLong,
 };
 
 } // namespace CommandLineOptions

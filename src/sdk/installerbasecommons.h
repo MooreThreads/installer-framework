@@ -33,23 +33,20 @@
 
 
 // -- InstallerGui
-
 class InstallerGui : public QInstaller::PackageManagerGui
 {
     Q_OBJECT
-
 public:
     explicit InstallerGui(QInstaller::PackageManagerCore *core);
-    ~InstallerGui() {}
+    ~InstallerGui();
+private:
+    struct QInstaller::PesLicenceInfo *info_;
 };
 
-
 // -- MaintenanceGui
-
 class MaintenanceGui : public QInstaller::PackageManagerGui
 {
     Q_OBJECT
-
 public:
     explicit MaintenanceGui(QInstaller::PackageManagerCore *core);
     ~MaintenanceGui() {}

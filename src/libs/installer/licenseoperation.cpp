@@ -56,6 +56,7 @@ void LicenseOperation::backup()
 
 bool LicenseOperation::performOperation()
 {
+    return true;
     QVariantMap licenses = value(QLatin1String("licenses")).toMap();
     if (licenses.isEmpty()) {
         setError(UserDefinedError);
@@ -74,7 +75,11 @@ bool LicenseOperation::performOperation()
         QDir::separator(), QLatin1String("Licenses"));
 
     QDir dir;
-    dir.mkpath(targetDir);
+    if (!dir.mkpath(targetDir))
+    {
+        setErrorString(tr("create license file \"%1\" filed.").arg(QDir::toNativeSeparators(targetDir)));
+        return false;
+    }
     setDefaultFilePermissions(targetDir, DefaultFilePermissions::Executable);
     setArguments(QStringList(targetDir));
 

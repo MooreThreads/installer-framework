@@ -86,6 +86,8 @@ public:
     QString systemIconSuffix() const;
     QString wizardStyle() const;
     QString styleSheet() const;
+    QString messageFile() const;
+    bool needRestart() const;
     QString titleColor() const;
     int wizardDefaultWidth() const;
     int wizardDefaultHeight() const;

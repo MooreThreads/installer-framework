@@ -51,12 +51,17 @@ namespace QInstaller {
 
 static void printError(QWidget *parent, const QString &value)
 {
+#if 0
     if (qobject_cast<QApplication*> (qApp) != 0) {
         QMessageBox::critical(parent, QObject::tr( "Error acquiring admin rights" ), value,
             QMessageBox::Ok, QMessageBox::Ok);
     } else {
         std::cout << value.toStdString() << std::endl;
     }
+#else
+    Q_UNUSED(parent)
+    std::cout << value.toStdString() << std::endl;
+#endif
 }
 
 bool AdminAuthorization::execute(QWidget *parent, const QString &program, const QStringList &arguments)

@@ -243,6 +243,31 @@ public:
             return path;
         return m_data.value(scPrefix).toString() + QLatin1String("/") + path;
     }
+    void readMessage(const QString file_name)
+    {
+        if(file_name.isEmpty()){
+            qWarning() << "empty messgge file";
+            return;
+        }
+        QFile file(file_name);
+        if(!file.open(QIODevice::ReadOnly | QIODevice::Text)){
+            qWarning() << "open " << file_name << "failed !";
+            return;
+        };
+        QXmlStreamReader xmlreader(&file);
+        QStringList keys;
+        keys << scInstallError << scInstallFinish << scUninstallError << scUninstallFinish;
+        while (xmlreader.readNextStartElement()) {
+            const QString name = xmlreader.name().toString();
+            if(name == scMessages){
+                continue;
+            }
+            if (keys.contains(name)) {
+                m_data.insert(name, xmlreader.readElementText(QXmlStreamReader::SkipChildElements));
+            }
+        }
+        file.close();
+    }
 };
 
 
@@ -304,7 +329,7 @@ Settings Settings::fromFileAndPrefix(const QString &path, const QString &prefix,
                 << scRepositorySettingsPageVisible << scTargetConfigurationFile
                 << scRemoteRepositories << scTranslations << scUrlQueryString << QLatin1String(scControlScript)
                 << scCreateLocalRepository << scInstallActionColumnVisible << scSupportsModify << scAllowUnstableComponents
-                << scSaveDefaultRepositories << scRepositoryCategories;
+                << scSaveDefaultRepositories << scRepositoryCategories << scMessageFile << scNeedRestart << scProductUUID;
 
     Settings s;
     s.d->m_data.insert(scPrefix, prefix);
@@ -384,6 +409,8 @@ Settings Settings::fromFileAndPrefix(const QString &path, const QString &prefix,
         s.d->m_data.insert(scAllowUnstableComponents, false);
     if (!s.d->m_data.contains(scSaveDefaultRepositories))
         s.d->m_data.insert(scSaveDefaultRepositories, true);
+
+    s.d->readMessage(s.messageFile());
     return s;
 }
 
@@ -445,6 +472,15 @@ QString Settings::wizardStyle() const
 QString Settings::styleSheet() const
 {
     return d->absolutePathFromKey(scStyleSheet);
+}
+
+QString Settings::messageFile() const
+{
+    return d->absolutePathFromKey(scMessageFile);
+}
+bool Settings::needRestart() const
+{
+    return d->m_data.value(scNeedRestart).toString() == QLatin1String("true");
 }
 
 QString Settings::titleColor() const

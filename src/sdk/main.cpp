@@ -41,6 +41,11 @@
 #include <QCommandLineParser>
 #include <QDateTime>
 #include <QNetworkProxyFactory>
+#include <QFile>
+#include <QStandardPaths>
+
+#include <QFile>
+#include <QStandardPaths>
 
 #include <iostream>
 
@@ -49,12 +54,48 @@
 #  include <sys/types.h>
 #endif
 
+#include <windows.h>
+
 #define QUOTE_(x) #x
 #define QUOTE(x) QUOTE_(x)
 #define VERSION "IFW Version: " QUOTE(IFW_VERSION_STR) ", built with Qt " QT_VERSION_STR "."
 #define BUILDDATE "Build date: " __DATE__
 #define SHA "Installer Framework SHA1: " QUOTE(_GIT_SHA1_)
 static const char PLACEHOLDER[32] = "MY_InstallerCreateDateTime_MY";
+
+#ifdef WIN32
+bool checkUninstallProcess()
+{
+    WCHAR currentExePath[MAX_PATH] = { 0 };
+    GetModuleFileName(NULL, currentExePath, MAX_PATH);
+
+    std::wstring::size_type pos = std::wstring(currentExePath).find_last_of(L"\\/");
+    std::wstring currentExeName = std::wstring(currentExePath).substr(pos + 1);
+
+    if (currentExeName == L"uninst.exe") {
+        return true;
+    }
+
+    return false;
+}
+
+void cleanUninstallOperation()
+{
+    QString ink_desktop_file = QLatin1String("C:/Users/Public/Desktop") + QString::fromStdWString(L"/PES控制中心.lnk");
+    QFile file_ink(ink_desktop_file);
+    if (file_ink.exists() && !file_ink.remove()) {
+        std::cout << "delete lnk desktop file error!" << std::endl;
+    }
+
+    QString ink_start_menu_file = QString::fromStdWString(L"C:/ProgramData/Microsoft/Windows/Start Menu/Programs/Moore Threads/PES控制中心.lnk");
+    QFile file_start_menu(ink_start_menu_file);
+    if (file_start_menu.exists() && !file_start_menu.remove()) {
+        std::cout << "delete lnk start menu file error!" << std::endl;
+    }
+
+    RegDeleteKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MooreThreads Pes\\");
+}
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -284,6 +325,7 @@ int main(int argc, char *argv[])
             }
 #endif
         }
+
         return InstallerBase(argc, argv).run();
 
     } catch (const QInstaller::Error &e) {
@@ -293,6 +335,13 @@ int main(int argc, char *argv[])
     } catch (...) {
         std::cerr << "Unknown exception caught." << std::endl;
     }
+
+#ifdef WIN32
+        if (checkUninstallProcess()) {
+            cleanUninstallOperation();
+            return EXIT_SUCCESS;
+        }
+#endif
 
     return EXIT_FAILURE;
 }

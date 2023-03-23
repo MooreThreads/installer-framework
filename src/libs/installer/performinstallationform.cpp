@@ -36,7 +36,6 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollBar>
-#include <QVBoxLayout>
 #include <QImageReader>
 #include <QScrollArea>
 
@@ -76,16 +75,16 @@ using namespace QInstaller;
 /*!
     Constructs the perform installation UI with \a parent as parent.
 */
-PerformInstallationForm::PerformInstallationForm(QObject *parent)
+PerformInstallationForm::PerformInstallationForm(bool bInstaller, QObject *parent)
     : QObject(parent)
+    , m_worning(nullptr)
     , m_progressBar(nullptr)
     , m_progressLabel(nullptr)
     , m_downloadStatus(nullptr)
-    , m_productImagesScrollArea(nullptr)
     , m_productImagesLabel(nullptr)
-    , m_detailsButton(nullptr)
-    , m_detailsBrowser(nullptr)
     , m_updateTimer(nullptr)
+    , m_percentageLabel(nullptr)
+    , bInstaller_(bInstaller)
 {
 #ifdef Q_OS_WIN
     if (QSysInfo::windowsVersion() >= QSysInfo::WV_WINDOWS7) {
@@ -102,88 +101,12 @@ PerformInstallationForm::PerformInstallationForm(QObject *parent)
 */
 void PerformInstallationForm::setupUi(QWidget *widget)
 {
-    QVBoxLayout *baseLayout = new QVBoxLayout(widget);
-    baseLayout->setObjectName(QLatin1String("BaseLayout"));
-
-    QVBoxLayout *topLayout = new QVBoxLayout();
-    topLayout->setObjectName(QLatin1String("TopLayout"));
-
-    m_progressBar = new QProgressBar(widget);
-    m_progressBar->setRange(1, 100);
-    m_progressBar->setObjectName(QLatin1String("ProgressBar"));
-    topLayout->addWidget(m_progressBar);
-
-    m_progressLabel = new QLabel(widget);
-    m_progressLabel->setObjectName(QLatin1String("ProgressLabel"));
-    m_progressLabel->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Minimum);
-    topLayout->addWidget(m_progressLabel);
-
-    m_downloadStatus = new QLabel(widget);
-    m_downloadStatus->setObjectName(QLatin1String("DownloadStatus"));
-    m_downloadStatus->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Minimum);
-    m_downloadStatus->setWordWrap(true);
-    m_downloadStatus->setTextFormat(Qt::TextFormat::RichText);
-    topLayout->addWidget(m_downloadStatus);
-    connect(ProgressCoordinator::instance(), &ProgressCoordinator::downloadStatusChanged, this,
-        &PerformInstallationForm::onDownloadStatusChanged);
-
-    m_detailsButton = new QPushButton(tr("&Show Details"), widget);
-    m_detailsButton->setObjectName(QLatin1String("DetailsButton"));
-    m_detailsButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
-    connect(m_detailsButton, &QAbstractButton::clicked, this, &PerformInstallationForm::toggleDetails);
-    topLayout->addWidget(m_detailsButton);
-
-    QVBoxLayout *bottomLayout = new QVBoxLayout();
-    bottomLayout->setObjectName(QLatin1String("BottomLayout"));
-    bottomLayout->addStretch();
-
-    m_productImagesScrollArea = new QScrollArea(widget);
-    m_productImagesScrollArea->setObjectName(QLatin1String("ProductImagesScrollArea"));
-    m_productImagesScrollArea->setWidgetResizable(true);
-    m_productImagesScrollArea->setFrameShape(QFrame::NoFrame);
-    m_productImagesScrollArea->setStyleSheet(QLatin1String("background-color:transparent;"));
-
-    m_productImagesLabel = new AspectRatioLabel(widget);
-    m_productImagesLabel->setObjectName(QLatin1String("ProductImagesLabel"));
-
-    m_productImagesScrollArea->setWidget(m_productImagesLabel);
-    bottomLayout->addWidget(m_productImagesScrollArea);
-
-    m_detailsBrowser = new QTextEdit(widget);
-    m_detailsBrowser->setReadOnly(true);
-    m_detailsBrowser->setWordWrapMode(QTextOption::NoWrap);
-    m_detailsBrowser->setObjectName(QLatin1String("DetailsBrowser"));
-    m_detailsBrowser->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    bottomLayout->addWidget(m_detailsBrowser);
-
-    bottomLayout->setStretch(1, 10);
-    bottomLayout->setStretch(2, 10);
-    baseLayout->addLayout(topLayout);
-    baseLayout->addLayout(bottomLayout);
-
-    m_updateTimer = new QTimer(widget);
-    connect(m_updateTimer, &QTimer::timeout,
-            this, &PerformInstallationForm::updateProgress); //updateProgress includes label
-    m_updateTimer->setInterval(30);
-
-    m_progressBar->setRange(0, 100);
-}
-
-/*!
-    Shows the details button if \a visible is \c true.
-*/
-void PerformInstallationForm::setDetailsWidgetVisible(bool visible)
-{
-    m_detailsButton->setVisible(visible);
-}
-
-/*!
-    Displays \a details about progress of the installation in the details
-    browser.
-*/
-void PerformInstallationForm::appendProgressDetails(const QString &details)
-{
-    m_detailsBrowser->append(details);
+    if (bInstaller_) {
+        initInstallUi(widget);
+    }
+    else {
+        initUnInstallUi(widget);
+    }
 }
 
 /*!
@@ -192,9 +115,15 @@ void PerformInstallationForm::appendProgressDetails(const QString &details)
 void PerformInstallationForm::updateProgress()
 {
     QInstaller::ProgressCoordinator *progressCoordninator = QInstaller::ProgressCoordinator::instance();
-    const int progressPercentage = progressCoordninator->progressInPercentage();
+    int progressPercentage = progressCoordninator->progressInPercentage();
 
-    m_progressBar->setValue(progressPercentage);
+    if (m_progressBar) {
+        if (!bInstaller_)
+        {
+            progressPercentage = m_progressBar->value() + 5 > 100 ? 100 : m_progressBar->value() + 5;
+        }
+        m_progressBar->setValue(progressPercentage);
+    }
 #ifdef Q_OS_WIN
     if (m_taskButton) {
         if (!m_taskButton->window() && QApplication::activeWindow())
@@ -202,46 +131,13 @@ void PerformInstallationForm::updateProgress()
         m_taskButton->progress()->setValue(progressPercentage);
     }
 #endif
-
-    static QString lastLabelText;
-    if (lastLabelText == progressCoordninator->labelText())
-        return;
-    lastLabelText = progressCoordninator->labelText();
-    m_progressLabel->setText(m_progressLabel->fontMetrics().elidedText(progressCoordninator->labelText(),
-        Qt::ElideRight, m_progressLabel->width()));
-}
-/*!
-    Sets the text of the details button to \uicontrol {Hide Details} or
-    \uicontrol {Show Details} depending on whether the details are currently
-    shown or hidden. Emits the showDetailsChanged() signal.
-*/
-void PerformInstallationForm::toggleDetails()
-{
-    const bool willShow = !isShowingDetails();
-    m_detailsButton->setText(willShow ? tr("&Hide Details") : tr("&Show Details"));
-    m_detailsBrowser->setVisible(willShow);
-    m_productImagesScrollArea->setVisible(!willShow);
-    emit showDetailsChanged();
-}
-
-/*!
-    Clears the contents of the details browser.
-*/
-void PerformInstallationForm::clearDetailsBrowser()
-{
-    m_detailsBrowser->clear();
-}
-
-/*!
-    Enables the details button with the text \uicontrol {Show Details} and hides
-    the details browser.
-*/
-void PerformInstallationForm::enableDetails()
-{
-    m_detailsButton->setEnabled(true);
-    m_detailsButton->setText(tr("&Show Details"));
-    m_detailsBrowser->setVisible(false);
-    m_productImagesScrollArea->setVisible(true);
+    if (m_progressLabel) {
+        m_progressLabel->setText(m_message);
+    }
+    
+    if (m_percentageLabel) {
+        m_percentageLabel->setText(QString::fromLatin1("%1%").arg(progressPercentage));
+    }
 }
 
 /*!
@@ -262,20 +158,9 @@ void PerformInstallationForm::stopUpdateProgress()
     updateProgress();
 }
 
-/*!
-    Enables the details button if \a enable is \c true.
-*/
-void PerformInstallationForm::setDetailsButtonEnabled(bool enable)
+void PerformInstallationForm::setMessage(const QString &msg)
 {
-    m_detailsButton->setEnabled(enable);
-}
-
-/*!
-    Returns \c true if the details browser is visible.
-*/
-bool PerformInstallationForm::isShowingDetails() const
-{
-    return m_detailsBrowser->isVisible();
+    m_message = msg;
 }
 
 /*!
@@ -284,7 +169,9 @@ bool PerformInstallationForm::isShowingDetails() const
 */
 void PerformInstallationForm::onDownloadStatusChanged(const QString &status)
 {
-    m_downloadStatus->setText(status);
+    if (m_downloadStatus) {
+        m_downloadStatus->setText(status);
+    }
 }
 
 /*!
@@ -304,4 +191,97 @@ void PerformInstallationForm::setImageFromFileName(const QString &fileName)
         qCWarning(QInstaller::lcDeveloperBuild) <<
             QString::fromLatin1("Failed to load image '%1' : %2.").arg(fileName, reader.errorString());
     }
+}
+
+void QInstaller::PerformInstallationForm::initInstallUi(QWidget* widget)
+{
+    QVBoxLayout* topLayout = new QVBoxLayout(widget);
+    topLayout->setContentsMargins(24, 0, 24, 0);
+
+    QHBoxLayout* label_layout = new QHBoxLayout;
+    label_layout->setContentsMargins(0, 0, 0, 0);
+    {
+        m_progressLabel = new QLabel(widget);
+        m_progressLabel->setObjectName(QLatin1String("ProgressLabel"));
+        m_progressLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+
+        m_worning = new PesWorningLabel(widget);
+        QIcon icon(QLatin1String(":/description.png"));
+        m_worning->setPixmap(icon.pixmap(18, 18));
+        m_worning->setFixedSize(18, 18);
+
+        tool_tips_ = new PesInstallationFormToolTip();
+        tool_tips_->setMessage(tr("Interrupting installation process may cause PES to work unexpectedly"));
+        connect(m_worning, &PesWorningLabel::showWorning, this, &PerformInstallationForm::showToolTip);
+        connect(m_worning, &PesWorningLabel::hideWorning, this, &PerformInstallationForm::hideTooltip);
+
+        m_percentageLabel = new QLabel(widget);
+        m_percentageLabel->setObjectName(QLatin1String("percentageLabel"));
+
+        label_layout->addWidget(m_progressLabel, 0, Qt::AlignLeft);
+        label_layout->addWidget(m_worning, 0, Qt::AlignLeft);
+        label_layout->addWidget(m_percentageLabel, 0, Qt::AlignRight);
+    }
+
+    topLayout->addLayout(label_layout);
+    topLayout->addSpacing(11);
+
+    QHBoxLayout* progressLayout = new QHBoxLayout;
+    progressLayout->setContentsMargins(0, 0, 0, 0);
+    {
+        m_progressBar = new QProgressBar(widget);
+        m_progressBar->setFixedHeight(6);
+        m_progressBar->setRange(1, 100);
+        m_progressBar->setObjectName(QLatin1String("ProgressBar"));
+
+        progressLayout->addWidget(m_progressBar);
+    }
+    topLayout->addLayout(progressLayout);
+    topLayout->addSpacing(44);
+    topLayout->addStretch();
+
+    m_updateTimer = new QTimer(widget);
+    connect(m_updateTimer, &QTimer::timeout,
+        this, &PerformInstallationForm::updateProgress); //updateProgress includes label
+    m_updateTimer->setInterval(30);
+
+    m_progressBar->setRange(0, 100);
+    m_progressBar->setTextVisible(false);
+}
+
+void QInstaller::PerformInstallationForm::initUnInstallUi(QWidget* widget)
+{
+    QVBoxLayout* topLayout = new QVBoxLayout(widget);
+    topLayout->setContentsMargins(24, 0, 24, 0);
+    topLayout->setObjectName(QLatin1String("TopLayout"));
+
+    QHBoxLayout* label_layout = new QHBoxLayout;
+    label_layout->setContentsMargins(0, 20, 0, 0);
+    {
+        m_progressLabel = new QLabel(widget);
+        m_progressLabel->setFixedHeight(24);
+        m_progressLabel->setObjectName(QLatin1String("UnInstallProgressLabel"));
+        m_progressLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+
+        label_layout->addWidget(m_progressLabel, 0, Qt::AlignLeft);
+        label_layout->addStretch();
+    }
+
+    m_progressBar = new QProgressBar(widget);
+    m_progressBar->setFixedHeight(6);
+    m_progressBar->setRange(1, 100);
+    m_progressBar->setObjectName(QLatin1String("ProgressBar"));
+
+    topLayout->addLayout(label_layout);
+    topLayout->addSpacing(20);
+    topLayout->addWidget(m_progressBar);
+    topLayout->addSpacing(32);
+
+    m_updateTimer = new QTimer(widget);
+    connect(m_updateTimer, &QTimer::timeout,
+        this, &PerformInstallationForm::updateProgress); //updateProgress includes label
+    m_updateTimer->setInterval(30);
+
+    m_progressBar->setRange(0, 100);
+    m_progressBar->setTextVisible(false);
 }

@@ -1134,9 +1134,9 @@ Operation *Component::createOperation(const QString &operationName, const QStrin
     // Operation can contain variables which are resolved when performing the operation
     if (operation->requiresUnreplacedVariables())
         operation->setArguments(parameters);
-    else
+    else {
         operation->setArguments(d->m_core->replaceVariables(parameters));
-
+    }
 
     operation->setValue(QLatin1String("component"), name());
     return operation;
