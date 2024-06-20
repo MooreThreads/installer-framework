@@ -1,34 +1,9 @@
-This is the GNU General Public License version 3, annotated with The
-Qt Company GPL Exception 1.0:
+The PES Installer (PES安装程序) from Moore Threds is licensed under the GNU General Public License, version 3, except for the third-party components listed below. Copyright (c) 2023-2024 Moore Threads Technology Co., Ltd("Moore Threads"). All rights reserved.
 
+Terms of the  GNU General Public License, version 3
 -------------------------------------------------------------------------
 
-The Qt Company GPL Exception 1.0
-
-Exception 1:
-
-As a special exception you may create a larger work which contains the
-output of this application and distribute that work under terms of your
-choice, so long as the work is not otherwise derived from or based on
-this application and so long as the work does not in itself generate
-output that contains the output from this application in its original
-or modified form.
-
-Exception 2:
-
-As a special exception, you have permission to combine this application
-with Plugins licensed under the terms of your choice, to produce an
-executable, and to copy and distribute the resulting executable under
-the terms of your choice. However, the executable must be accompanied
-by a prominent notice offering all users of the executable the entire
-source code to this application, excluding the source code of the
-independent modules, but including any changes you have made to this
-application, under the terms of this license.
-
-
--------------------------------------------------------------------------
-
-                    GNU GENERAL PUBLIC LICENSE
+                   GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007
 
  Copyright (C) 2007 Free Software Foundation, Inc. <http://fsf.org/>
@@ -702,3 +677,64 @@ may consider it more useful to permit linking proprietary applications with
 the library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.  But first, please read
 <http://www.gnu.org/philosophy/why-not-lgpl.html>.
+
+
+
+The Moore Perf System Setup uses the executable form of the Qt installer-framework. You can obtain the source code of the Qt installer-framework from: https://download.qt.io/official_releases/qt-installer-framework/4.6.1/
+
+The PES Installer (PES安装程序) uses the installer-framework from QT which is under the GPL v3, annotated with The Qt Company GPL Exception 1.0. You can obtain the source code from: https://github.com/MooreThreads/installer-framework. 
+
+The Qt Company GPL Exception 1.0
+
+Exception 1:
+
+As a special exception you may create a larger work which contains the
+output of this application and distribute that work under terms of your
+choice, so long as the work is not otherwise derived from or based on
+this application and so long as the work does not in itself generate
+output that contains the output from this application in its original
+or modified form.
+
+Exception 2:
+
+As a special exception, you have permission to combine this application
+with Plugins licensed under the terms of your choice, to produce an
+executable, and to copy and distribute the resulting executable under
+the terms of your choice. However, the executable must be accompanied
+by a prominent notice offering all users of the executable the entire
+source code to this application, excluding the source code of the
+independent modules, but including any changes you have made to this
+application, under the terms of this license.
+
+
+
+The Qt Installer Framework sources include third party code:
+
+============================================================
+
+LZMA SDK
+
+Parts of the sources from the LZMA SDK , version 9.20 are
+under src/libs/7zip/unix and src/libs/7z/win.
+
+The LZMA SDK is written and placed in the public domain by
+Igor Pavlov. Some code in LZMA SDK is based on public domain
+code from another developers:
+1) PPMd var.H (2001): Dmitry Shkarin
+2) SHA-256: Wei Dai (Crypto++ library)
+
+============================================================
+
+KD Tools
+
+Sources for the KD Tools library are under src/libs/kdtools.
+
+The library is released under the same licenses as the rest
+of the installer framework.
+
+The copyright is owned by Klaralvdalens Datakonsult AB.
+
+
+
+For other third party dependencies, please refer to this URL: 
+https://github.com/MooreThreads/installer-framework/tree/master/src/libs/3rdparty 
